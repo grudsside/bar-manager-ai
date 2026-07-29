@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any
@@ -148,7 +149,7 @@ class PostgresTaskStore(TaskStore):
                     values ($1, 'created', 'owner', $2::jsonb)
                     """,
                     task_id,
-                    payload.model_dump(mode="json"),
+                    json.dumps(payload.model_dump(mode="json"), ensure_ascii=False),
                 )
         return await self.get_task(task_id)
 
@@ -182,6 +183,7 @@ class PostgresTaskStore(TaskStore):
             values.append(value)
         values.append(task_id)
 
+        event_payload = payload.model_dump(exclude_unset=True, mode="json")
         async with pool.acquire() as connection:
             async with connection.transaction():
                 result = await connection.execute(
@@ -196,7 +198,7 @@ class PostgresTaskStore(TaskStore):
                     values ($1, 'updated', 'owner', $2::jsonb)
                     """,
                     task_id,
-                    changes,
+                    json.dumps(event_payload, ensure_ascii=False),
                 )
         return await self.get_task(task_id)
 
