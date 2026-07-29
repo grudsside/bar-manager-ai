@@ -30,11 +30,14 @@ jobs:
       - name: Validate shell scripts
         run: |
           bash -n deploy/firstvds/scripts/install-server.sh
+          bash -n deploy/firstvds/scripts/configure-instance.sh
           bash -n deploy/firstvds/scripts/deploy.sh
 
       - name: Validate Docker Compose
         run: |
           cp deploy/firstvds/.env.example deploy/firstvds/.env
+          sed -i 's/DB_PASSWORD/test-password/' deploy/firstvds/.env
+          sed -i 's/REGION/test-region/' deploy/firstvds/.env
           docker compose \
             --env-file deploy/firstvds/.env \
             -f deploy/firstvds/docker-compose.yml \
@@ -43,6 +46,6 @@ jobs:
       - name: Validate Caddyfile
         run: |
           docker run --rm \
-            -e API_DOMAIN=api.example.com \
+            -e API_DOMAIN=uhalovgrigorij40731.fvds.ru \
             -v "$PWD/deploy/firstvds/Caddyfile:/etc/caddy/Caddyfile:ro" \
             caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
