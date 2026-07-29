@@ -21,10 +21,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Check JavaScript syntax
-        run: node --check web/app.js
+        run: |
+          node --check web/app.js
+          node --check web/api-client.js
+          node --check web/service-worker.js
       - name: Check required PWA files
-        run: test -f web/index.html && test -f web/styles.css && test -f web/manifest.webmanifest && test -f web/service-worker.js && test -f web/icon.svg
+        run: test -f web/index.html && test -f web/styles.css && test -f web/manifest.webmanifest && test -f web/service-worker.js && test -f web/icon.svg && test -f web/api-client.js
       - name: Validate manifest JSON
         run: python -m json.tool web/manifest.webmanifest >/dev/null
       - name: Check HTML references
         run: grep -q './styles.css' web/index.html && grep -q './app.js' web/index.html && grep -q './manifest.webmanifest' web/index.html
+      - name: Check API sync hooks
+        run: grep -q "import('./api-client.js')" web/app.js && grep -q "bar-manager-api-configured" web/app.js && grep -q "barManagerPendingOperations" web/app.js
