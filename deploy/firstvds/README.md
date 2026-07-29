@@ -32,8 +32,11 @@ Never commit the database password or Supabase service role key.
 
 ## First server setup
 
+A clean Ubuntu image may not contain Git, so install the minimum bootstrap packages first:
+
 ```bash
 ssh root@SERVER_IP
+apt-get update && apt-get install -y ca-certificates curl git
 git clone https://github.com/grudsside/bar-manager-ai.git /opt/bar-manager-ai
 cd /opt/bar-manager-ai
 bash deploy/firstvds/scripts/install-server.sh
