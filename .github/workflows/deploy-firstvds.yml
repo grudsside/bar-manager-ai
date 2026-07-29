@@ -1,0 +1,53 @@
+name: Deploy backend to FirstVDS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "backend/**"
+      - "deploy/firstvds/**"
+      - ".github/workflows/deploy-firstvds.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firstvds-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.FIRSTVDS_AUTO_DEPLOY == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validate deployment secrets
+        env:
+          FIRSTVDS_HOST: ${{ secrets.FIRSTVDS_HOST }}
+          FIRSTVDS_USER: ${{ secrets.FIRSTVDS_USER }}
+          FIRSTVDS_SSH_KEY: ${{ secrets.FIRSTVDS_SSH_KEY }}
+        run: |
+          test -n "$FIRSTVDS_HOST"
+          test -n "$FIRSTVDS_USER"
+          test -n "$FIRSTVDS_SSH_KEY"
+
+      - name: Configure SSH
+        env:
+          FIRSTVDS_HOST: ${{ secrets.FIRSTVDS_HOST }}
+          FIRSTVDS_SSH_KEY: ${{ secrets.FIRSTVDS_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$FIRSTVDS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$FIRSTVDS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy current main branch
+        env:
+          FIRSTVDS_HOST: ${{ secrets.FIRSTVDS_HOST }}
+          FIRSTVDS_USER: ${{ secrets.FIRSTVDS_USER }}
+          FIRSTVDS_PORT: ${{ secrets.FIRSTVDS_PORT }}
+        run: |
+          PORT="${FIRSTVDS_PORT:-22}"
+          ssh -p "$PORT" "$FIRSTVDS_USER@$FIRSTVDS_HOST" \
+            'cd /opt/bar-manager-ai && bash deploy/firstvds/scripts/deploy.sh'
