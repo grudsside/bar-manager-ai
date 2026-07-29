@@ -3,4 +3,5 @@ uvicorn[standard]>=0.30,<1
 pydantic-settings>=2.7,<3
 httpx>=0.28,<1
 openai-agents
+asyncpg>=0.30,<1
 pytest>=8,<9
