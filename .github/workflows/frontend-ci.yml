@@ -1,0 +1,30 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "web/**"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/frontend-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check JavaScript syntax
+        run: node --check web/app.js
+      - name: Check required PWA files
+        run: test -f web/index.html && test -f web/styles.css && test -f web/manifest.webmanifest && test -f web/service-worker.js && test -f web/icon.svg
+      - name: Validate manifest JSON
+        run: python -m json.tool web/manifest.webmanifest >/dev/null
+      - name: Check HTML references
+        run: grep -q './styles.css' web/index.html && grep -q './app.js' web/index.html && grep -q './manifest.webmanifest' web/index.html
