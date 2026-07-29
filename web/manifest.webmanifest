@@ -1,0 +1,19 @@
+{
+  "name": "Бар-менеджер AI",
+  "short_name": "Бар-менеджер",
+  "description": "Персональный ИИ-ассистент для управления задачами Оксфорда и Современника",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f2ea",
+  "theme_color": "#5f6843",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
