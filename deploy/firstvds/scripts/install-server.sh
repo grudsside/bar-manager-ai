@@ -8,7 +8,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl git ufw fail2ban
+apt-get install -y ca-certificates curl git ufw fail2ban openssl python3
 
 # Remove conflicting distro packages before installing Docker CE.
 for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do
