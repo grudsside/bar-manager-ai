@@ -4,8 +4,9 @@ import hmac
 import os
 from datetime import datetime, timezone
 from typing import Annotated, Any
+from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from .agent import run_agent
@@ -14,8 +15,13 @@ from .schemas import (
     AgentChatRequest,
     AgentChatResponse,
     HealthResponse,
+    TaskCreate,
+    TaskOut,
+    TaskStatus,
+    TaskUpdate,
     TelegramWebhookResponse,
 )
+from .task_store import TaskNotFoundError, TaskStore, get_task_store
 
 settings = get_settings()
 if settings.openai_api_key:
@@ -23,7 +29,7 @@ if settings.openai_api_key:
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/docs" if settings.environment != "production" else None,
     redoc_url=None,
 )
@@ -32,7 +38,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_origin],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["Content-Type", "X-Owner-Key"],
 )
 
@@ -53,6 +59,10 @@ def require_owner(
         )
 
 
+def task_store(current: Settings = Depends(get_settings)) -> TaskStore:
+    return get_task_store(current.database_url)
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health(current: Settings = Depends(get_settings)) -> HealthResponse:
     return HealthResponse(
@@ -62,6 +72,64 @@ async def health(current: Settings = Depends(get_settings)) -> HealthResponse:
         telegram_configured=bool(current.telegram_bot_token and current.telegram_webhook_secret),
         database_configured=bool(current.database_url),
     )
+
+
+@app.get(
+    "/api/tasks",
+    response_model=list[TaskOut],
+    dependencies=[Depends(require_owner)],
+)
+async def list_tasks(
+    task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
+    store: TaskStore = Depends(task_store),
+) -> list[TaskOut]:
+    return await store.list_tasks(status=task_status)
+
+
+@app.post(
+    "/api/tasks",
+    response_model=TaskOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_owner)],
+)
+async def create_task(
+    payload: TaskCreate,
+    store: TaskStore = Depends(task_store),
+) -> TaskOut:
+    try:
+        return await store.create_task(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/tasks/{task_id}",
+    response_model=TaskOut,
+    dependencies=[Depends(require_owner)],
+)
+async def get_task(task_id: UUID, store: TaskStore = Depends(task_store)) -> TaskOut:
+    try:
+        return await store.get_task(task_id)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found") from exc
+
+
+@app.patch(
+    "/api/tasks/{task_id}",
+    response_model=TaskOut,
+    dependencies=[Depends(require_owner)],
+)
+async def update_task(
+    task_id: UUID,
+    payload: TaskUpdate,
+    store: TaskStore = Depends(task_store),
+) -> TaskOut:
+    try:
+        return await store.update_task(task_id, payload)
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @app.post(
