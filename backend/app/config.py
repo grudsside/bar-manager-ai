@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     owner_telegram_id: int | None = None
 
     database_url: str | None = None
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
+    supabase_storage_bucket: str = "bar-manager-files"
+
     vapid_public_key: str | None = None
     vapid_private_key: str | None = None
 

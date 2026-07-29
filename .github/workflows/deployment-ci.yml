@@ -1,0 +1,48 @@
+name: Deployment CI
+
+on:
+  pull_request:
+    paths:
+      - "deploy/firstvds/**"
+      - "backend/app/config.py"
+      - ".env.example"
+      - ".github/workflows/deploy-firstvds.yml"
+      - ".github/workflows/deployment-ci.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "deploy/firstvds/**"
+      - "backend/app/config.py"
+      - ".env.example"
+      - ".github/workflows/deploy-firstvds.yml"
+      - ".github/workflows/deployment-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell scripts
+        run: |
+          bash -n deploy/firstvds/scripts/install-server.sh
+          bash -n deploy/firstvds/scripts/deploy.sh
+
+      - name: Validate Docker Compose
+        run: |
+          cp deploy/firstvds/.env.example deploy/firstvds/.env
+          docker compose \
+            --env-file deploy/firstvds/.env \
+            -f deploy/firstvds/docker-compose.yml \
+            config >/dev/null
+
+      - name: Validate Caddyfile
+        run: |
+          docker run --rm \
+            -e API_DOMAIN=api.example.com \
+            -v "$PWD/deploy/firstvds/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
