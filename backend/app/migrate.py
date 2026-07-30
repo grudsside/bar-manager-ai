@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -10,6 +11,8 @@ import asyncpg
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 20
 DEFAULT_STATEMENT_TIMEOUT_SECONDS = 60
+DEFAULT_LOCK_TIMEOUT_SECONDS = 10
+_DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
 def discover_migrations(directory: Path = MIGRATIONS_DIR) -> list[Path]:
@@ -26,6 +29,125 @@ def describe_database_target(database_url: str) -> str:
         return f"{host}:{port}/{database}"
     except ValueError:
         return "configured PostgreSQL target"
+
+
+def split_sql_statements(sql: str) -> list[str]:
+    """Split PostgreSQL SQL on semicolons outside quoted content."""
+    statements: list[str] = []
+    buffer: list[str] = []
+    index = 0
+    in_single_quote = False
+    in_double_quote = False
+    in_line_comment = False
+    in_block_comment = False
+    dollar_tag: str | None = None
+
+    while index < len(sql):
+        char = sql[index]
+        next_char = sql[index + 1] if index + 1 < len(sql) else ""
+
+        if in_line_comment:
+            buffer.append(char)
+            index += 1
+            if char == "\n":
+                in_line_comment = False
+            continue
+
+        if in_block_comment:
+            buffer.append(char)
+            if char == "*" and next_char == "/":
+                buffer.append(next_char)
+                index += 2
+                in_block_comment = False
+            else:
+                index += 1
+            continue
+
+        if dollar_tag is not None:
+            if sql.startswith(dollar_tag, index):
+                buffer.append(dollar_tag)
+                index += len(dollar_tag)
+                dollar_tag = None
+            else:
+                buffer.append(char)
+                index += 1
+            continue
+
+        if in_single_quote:
+            buffer.append(char)
+            if char == "'":
+                if next_char == "'":
+                    buffer.append(next_char)
+                    index += 2
+                    continue
+                in_single_quote = False
+            index += 1
+            continue
+
+        if in_double_quote:
+            buffer.append(char)
+            if char == '"':
+                if next_char == '"':
+                    buffer.append(next_char)
+                    index += 2
+                    continue
+                in_double_quote = False
+            index += 1
+            continue
+
+        if char == "-" and next_char == "-":
+            buffer.extend((char, next_char))
+            index += 2
+            in_line_comment = True
+            continue
+
+        if char == "/" and next_char == "*":
+            buffer.extend((char, next_char))
+            index += 2
+            in_block_comment = True
+            continue
+
+        if char == "'":
+            buffer.append(char)
+            index += 1
+            in_single_quote = True
+            continue
+
+        if char == '"':
+            buffer.append(char)
+            index += 1
+            in_double_quote = True
+            continue
+
+        if char == "$":
+            match = _DOLLAR_QUOTE_RE.match(sql, index)
+            if match:
+                dollar_tag = match.group(0)
+                buffer.append(dollar_tag)
+                index = match.end()
+                continue
+
+        if char == ";":
+            statement = "".join(buffer).strip()
+            if statement:
+                statements.append(statement)
+            buffer.clear()
+            index += 1
+            continue
+
+        buffer.append(char)
+        index += 1
+
+    remaining = "".join(buffer).strip()
+    if remaining:
+        statements.append(remaining)
+
+    return statements
+
+
+def statement_summary(statement: str, limit: int = 120) -> str:
+    compact = " ".join(statement.split())
+    return compact if len(compact) <= limit else f"{compact[: limit - 3]}..."
 
 
 async def run_step(label: str, awaitable, timeout_seconds: int):
@@ -47,6 +169,9 @@ async def apply_migrations(database_url: str) -> None:
     statement_timeout = int(
         os.getenv("DB_STATEMENT_TIMEOUT_SECONDS", str(DEFAULT_STATEMENT_TIMEOUT_SECONDS))
     )
+    lock_timeout = int(
+        os.getenv("DB_LOCK_TIMEOUT_SECONDS", str(DEFAULT_LOCK_TIMEOUT_SECONDS))
+    )
     target = describe_database_target(database_url)
     print(
         f"Connecting to PostgreSQL at {target} "
@@ -59,7 +184,7 @@ async def apply_migrations(database_url: str) -> None:
             asyncpg.connect(
                 database_url,
                 timeout=connect_timeout,
-                command_timeout=statement_timeout,
+                command_timeout=statement_timeout + 10,
             ),
             timeout=connect_timeout + 2,
         )
@@ -100,16 +225,30 @@ async def apply_migrations(database_url: str) -> None:
                 continue
 
             sql = migration.read_text(encoding="utf-8")
+            statements = split_sql_statements(sql)
             print(
-                f"Applying migration: {migration.name} ({len(sql.encode('utf-8'))} bytes)",
+                f"Applying migration: {migration.name} "
+                f"({len(sql.encode('utf-8'))} bytes, {len(statements)} statements)",
                 flush=True,
             )
+
             async with connection.transaction():
-                await run_step(
-                    f"execute migration {migration.name}",
-                    connection.execute(sql),
-                    statement_timeout,
+                await connection.execute(
+                    f"set local statement_timeout = '{statement_timeout}s'"
                 )
+                await connection.execute(f"set local lock_timeout = '{lock_timeout}s'")
+
+                for position, statement in enumerate(statements, start=1):
+                    label = (
+                        f"execute {migration.name} statement "
+                        f"{position}/{len(statements)}: {statement_summary(statement)}"
+                    )
+                    await run_step(
+                        label,
+                        connection.execute(statement),
+                        statement_timeout + 5,
+                    )
+
                 await run_step(
                     f"record migration {migration.name}",
                     connection.execute(
