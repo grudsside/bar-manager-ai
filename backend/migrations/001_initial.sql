@@ -182,11 +182,18 @@ begin
 end;
 $$;
 
+drop trigger if exists tasks_set_updated_at on tasks;
 create trigger tasks_set_updated_at before update on tasks
 for each row execute function set_updated_at();
+
+drop trigger if exists telegram_chats_set_updated_at on telegram_chats;
 create trigger telegram_chats_set_updated_at before update on telegram_chats
 for each row execute function set_updated_at();
+
+drop trigger if exists recurring_rules_set_updated_at on recurring_rules;
 create trigger recurring_rules_set_updated_at before update on recurring_rules
 for each row execute function set_updated_at();
+
+drop trigger if exists push_subscriptions_set_updated_at on push_subscriptions;
 create trigger push_subscriptions_set_updated_at before update on push_subscriptions
 for each row execute function set_updated_at();
