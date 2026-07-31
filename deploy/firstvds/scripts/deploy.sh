@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-/opt/bar-manager-ai}"
 ENV_FILE="${ENV_FILE:-$REPO_DIR/deploy/firstvds/.env}"
 COMPOSE_FILE="$REPO_DIR/deploy/firstvds/docker-compose.yml"
+MIGRATION_LOG="/tmp/bar-manager-migration.log"
 
 cd "$REPO_DIR"
 
@@ -37,10 +38,26 @@ fi
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build api
 
-# Run migrations as a separate one-off job. The API healthcheck is not active
-# during this step, so a schema operation cannot make the API container unhealthy.
+# Run migrations as a separate one-off job. Supabase Session Pooler can finish
+# the SQL successfully but time out while asyncpg closes the connection. Accept
+# only that exact post-success condition; all SQL and connection errors remain fatal.
 echo "Running database migrations..."
-timeout 300s docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps api python -m app.migrate
+rm -f "$MIGRATION_LOG"
+set +e
+timeout 300s docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+  run --rm --no-deps api python -m app.migrate 2>&1 | tee "$MIGRATION_LOG"
+migration_status=${PIPESTATUS[0]}
+set -e
+
+if (( migration_status != 0 )); then
+  if grep -Eq '^Migration (already applied|applied): .+' "$MIGRATION_LOG" \
+    && grep -q '^TimeoutError$' "$MIGRATION_LOG"; then
+    echo "Migration completed; Supabase pooler close timeout was safely ignored."
+  else
+    echo "Database migration failed with status ${migration_status}." >&2
+    exit "$migration_status"
+  fi
+fi
 
 # Start the API only after migrations have completed successfully.
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
