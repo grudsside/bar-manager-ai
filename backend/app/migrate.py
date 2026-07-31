@@ -191,11 +191,21 @@ async def apply_migrations(database_url: str) -> None:
     except TimeoutError as exc:
         raise RuntimeError(
             f"Timed out connecting to PostgreSQL at {target}. "
-            "Check the Supabase Session pooler host, port 5432, DNS and outbound network access."
+            "Check the Supabase connection host, port, DNS and outbound network access."
         ) from exc
 
     print("PostgreSQL connection established", flush=True)
     try:
+        await run_step(
+            "configure statement_timeout",
+            connection.execute(f"set statement_timeout = '{statement_timeout}s'"),
+            statement_timeout,
+        )
+        await run_step(
+            "configure lock_timeout",
+            connection.execute(f"set lock_timeout = '{lock_timeout}s'"),
+            statement_timeout,
+        )
         await run_step(
             "prepare schema_migrations table",
             connection.execute(
@@ -232,38 +242,37 @@ async def apply_migrations(database_url: str) -> None:
                 flush=True,
             )
 
-            async with connection.transaction():
-                await connection.execute(
-                    f"set local statement_timeout = '{statement_timeout}s'"
+            # Execute statements independently. This avoids holding one long-lived
+            # transaction through a shared session pooler. Migration SQL must be
+            # idempotent so a failed run can safely resume.
+            for position, statement in enumerate(statements, start=1):
+                label = (
+                    f"execute {migration.name} statement "
+                    f"{position}/{len(statements)}: {statement_summary(statement)}"
                 )
-                await connection.execute(f"set local lock_timeout = '{lock_timeout}s'")
-
-                for position, statement in enumerate(statements, start=1):
-                    label = (
-                        f"execute {migration.name} statement "
-                        f"{position}/{len(statements)}: {statement_summary(statement)}"
-                    )
-                    await run_step(
-                        label,
-                        connection.execute(statement),
-                        statement_timeout + 5,
-                    )
-
                 await run_step(
-                    f"record migration {migration.name}",
-                    connection.execute(
-                        "insert into schema_migrations (name) values ($1)",
-                        migration.name,
-                    ),
-                    statement_timeout,
+                    label,
+                    connection.execute(statement),
+                    statement_timeout + 5,
                 )
+
+            await run_step(
+                f"record migration {migration.name}",
+                connection.execute(
+                    "insert into schema_migrations (name) values ($1) on conflict (name) do nothing",
+                    migration.name,
+                ),
+                statement_timeout,
+            )
             print(f"Migration applied: {migration.name}", flush=True)
     finally:
         await connection.close()
 
 
 async def main() -> None:
-    database_url = os.getenv("DATABASE_URL", "").strip()
+    database_url = os.getenv("MIGRATION_DATABASE_URL", "").strip()
+    if not database_url:
+        database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         print("DATABASE_URL is not configured; database migrations skipped", flush=True)
         return
