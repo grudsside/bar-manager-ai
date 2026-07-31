@@ -155,6 +155,12 @@ def sql_string_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def command_status_row_count(status: str) -> int:
+    """Extract the trailing row count from a PostgreSQL command tag."""
+    match = re.search(r"(?:^|\s)(\d+)$", status.strip())
+    return int(match.group(1)) if match else 0
+
+
 async def run_step(label: str, awaitable, timeout_seconds: int):
     print(f"Starting: {label} (timeout {timeout_seconds}s)", flush=True)
     try:
@@ -225,18 +231,19 @@ async def apply_migrations(database_url: str) -> None:
             statement_timeout,
         )
 
-        applied_rows = await run_step(
-            "load applied migrations",
-            connection.fetch("select name::text from schema_migrations order by name"),
-            statement_timeout,
-        )
-        applied_names = {str(row["name"]) for row in applied_rows}
-
         migrations = discover_migrations()
         print(f"Discovered {len(migrations)} migration(s)", flush=True)
         for migration in migrations:
-            print(f"Checking migration: {migration.name}", flush=True)
-            if migration.name in applied_names:
+            migration_literal = sql_string_literal(migration.name)
+            check_status = await run_step(
+                f"check migration {migration.name}",
+                connection.execute(
+                    "select 1 from schema_migrations "
+                    f"where name = {migration_literal} limit 1"
+                ),
+                statement_timeout,
+            )
+            if command_status_row_count(check_status) > 0:
                 print(f"Migration already applied: {migration.name}", flush=True)
                 continue
 
@@ -248,9 +255,9 @@ async def apply_migrations(database_url: str) -> None:
                 flush=True,
             )
 
-            # Execute statements independently. This avoids holding one long-lived
-            # transaction through a shared session pooler. Migration SQL must be
-            # idempotent so a failed run can safely resume.
+            # Execute statements independently through PostgreSQL's simple query
+            # protocol. This avoids prepared statements and long-lived transactions
+            # when migrations run through a Supabase pooler.
             for position, statement in enumerate(statements, start=1):
                 label = (
                     f"execute {migration.name} statement "
@@ -262,7 +269,6 @@ async def apply_migrations(database_url: str) -> None:
                     statement_timeout + 5,
                 )
 
-            migration_literal = sql_string_literal(migration.name)
             await run_step(
                 f"record migration {migration.name}",
                 connection.execute(
@@ -271,7 +277,6 @@ async def apply_migrations(database_url: str) -> None:
                 ),
                 statement_timeout,
             )
-            applied_names.add(migration.name)
             print(f"Migration applied: {migration.name}", flush=True)
     finally:
         await connection.close()
