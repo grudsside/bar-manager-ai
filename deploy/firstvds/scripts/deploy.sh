@@ -23,7 +23,13 @@ git checkout main
 git reset --hard origin/main
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build --remove-orphans
+
+# Build first, then explicitly remove the previous API container. This releases
+# any stale PostgreSQL transaction and guarantees that the new image is used.
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build api
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" stop api >/dev/null 2>&1 || true
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" rm -f api >/dev/null 2>&1 || true
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
 
 docker image prune -f >/dev/null
 
