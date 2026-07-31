@@ -18,6 +18,15 @@ def test_deploy_runs_migrations_as_separate_job() -> None:
     assert "timeout 300s" in deploy_script
 
 
+def test_deploy_only_ignores_pooler_timeout_after_migration_success() -> None:
+    deploy_script = (
+        REPO_ROOT / "deploy" / "firstvds" / "scripts" / "deploy.sh"
+    ).read_text(encoding="utf-8")
+    assert "Migration (already applied|applied)" in deploy_script
+    assert "grep -q '^TimeoutError$'" in deploy_script
+    assert "Database migration failed" in deploy_script
+
+
 def test_migrator_avoids_long_lived_pooler_transaction() -> None:
     migrator = (REPO_ROOT / "backend" / "app" / "migrate.py").read_text(
         encoding="utf-8"
