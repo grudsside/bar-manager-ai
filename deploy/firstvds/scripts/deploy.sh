@@ -12,7 +12,6 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-# Refuse deployment if obvious placeholders remain.
 if grep -Eq '(^|=)(api\.example\.com|PROJECT_REF|DB_PASSWORD|REGION\.pooler)' "$ENV_FILE"; then
   echo "Environment file still contains placeholder values." >&2
   exit 1
@@ -24,11 +23,17 @@ git reset --hard origin/main
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 
-# Build first, then explicitly remove the previous API container. This releases
-# any stale PostgreSQL transaction and guarantees that the new image is used.
+# Stop the public stack before schema changes and build the current API image.
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" stop caddy api >/dev/null 2>&1 || true
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" rm -f caddy api >/dev/null 2>&1 || true
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build api
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" stop api >/dev/null 2>&1 || true
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" rm -f api >/dev/null 2>&1 || true
+
+# Run migrations as a separate one-off job. The API healthcheck is not active
+# during this step, so a schema operation cannot make the API container unhealthy.
+echo "Running database migrations..."
+timeout 300s docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps api python -m app.migrate
+
+# Start the API only after migrations have completed successfully.
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
 
 docker image prune -f >/dev/null
@@ -39,7 +44,7 @@ if [[ -z "$API_DOMAIN" ]]; then
   exit 1
 fi
 
-for attempt in {1..24}; do
+for attempt in {1..36}; do
   if curl --fail --silent --show-error "https://${API_DOMAIN}/health" >/tmp/bar-manager-health.json; then
     cat /tmp/bar-manager-health.json
     echo
@@ -50,5 +55,5 @@ for attempt in {1..24}; do
 done
 
 echo "Deployment did not become healthy. Recent logs:" >&2
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=150 >&2
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=200 >&2
 exit 1
