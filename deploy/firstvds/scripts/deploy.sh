@@ -26,6 +26,15 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 # Stop the public stack before schema changes and build the current API image.
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" stop caddy api >/dev/null 2>&1 || true
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" rm -f caddy api >/dev/null 2>&1 || true
+
+# Remove abandoned one-off migration containers from interrupted deployments.
+mapfile -t stale_migration_containers < <(
+  docker ps -aq --filter "name=bar-manager-ai-api-run-"
+)
+if (( ${#stale_migration_containers[@]} > 0 )); then
+  docker rm -f "${stale_migration_containers[@]}" >/dev/null 2>&1 || true
+fi
+
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build api
 
 # Run migrations as a separate one-off job. The API healthcheck is not active
