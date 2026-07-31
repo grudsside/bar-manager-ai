@@ -150,6 +150,11 @@ def statement_summary(statement: str, limit: int = 120) -> str:
     return compact if len(compact) <= limit else f"{compact[: limit - 3]}..."
 
 
+def sql_string_literal(value: str) -> str:
+    """Quote a trusted internal value as a PostgreSQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 async def run_step(label: str, awaitable, timeout_seconds: int):
     print(f"Starting: {label} (timeout {timeout_seconds}s)", flush=True)
     try:
@@ -185,6 +190,7 @@ async def apply_migrations(database_url: str) -> None:
                 database_url,
                 timeout=connect_timeout,
                 command_timeout=statement_timeout + 10,
+                statement_cache_size=0,
             ),
             timeout=connect_timeout + 2,
         )
@@ -219,18 +225,18 @@ async def apply_migrations(database_url: str) -> None:
             statement_timeout,
         )
 
+        applied_rows = await run_step(
+            "load applied migrations",
+            connection.fetch("select name::text from schema_migrations order by name"),
+            statement_timeout,
+        )
+        applied_names = {str(row["name"]) for row in applied_rows}
+
         migrations = discover_migrations()
         print(f"Discovered {len(migrations)} migration(s)", flush=True)
         for migration in migrations:
-            already_applied = await run_step(
-                f"check migration {migration.name}",
-                connection.fetchval(
-                    "select exists(select 1 from schema_migrations where name = $1)",
-                    migration.name,
-                ),
-                statement_timeout,
-            )
-            if already_applied:
+            print(f"Checking migration: {migration.name}", flush=True)
+            if migration.name in applied_names:
                 print(f"Migration already applied: {migration.name}", flush=True)
                 continue
 
@@ -256,14 +262,16 @@ async def apply_migrations(database_url: str) -> None:
                     statement_timeout + 5,
                 )
 
+            migration_literal = sql_string_literal(migration.name)
             await run_step(
                 f"record migration {migration.name}",
                 connection.execute(
-                    "insert into schema_migrations (name) values ($1) on conflict (name) do nothing",
-                    migration.name,
+                    "insert into schema_migrations (name) "
+                    f"values ({migration_literal}) on conflict (name) do nothing"
                 ),
                 statement_timeout,
             )
+            applied_names.add(migration.name)
             print(f"Migration applied: {migration.name}", flush=True)
     finally:
         await connection.close()
