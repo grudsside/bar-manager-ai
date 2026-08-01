@@ -18,6 +18,15 @@ def test_deploy_runs_migrations_as_separate_job() -> None:
     assert "timeout 300s" in deploy_script
 
 
+def test_deploy_keeps_current_public_stack_running_until_migrations_finish() -> None:
+    deploy_script = (
+        REPO_ROOT / "deploy" / "firstvds" / "scripts" / "deploy.sh"
+    ).read_text(encoding="utf-8")
+    assert "stop caddy api" not in deploy_script
+    assert "rm -f caddy api" not in deploy_script
+    assert "A failed migration therefore leaves the last healthy release online" in deploy_script
+
+
 def test_deploy_only_ignores_pooler_timeout_after_all_migrations_finish() -> None:
     deploy_script = (
         REPO_ROOT / "deploy" / "firstvds" / "scripts" / "deploy.sh"
