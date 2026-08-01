@@ -40,7 +40,8 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build api
 
 # Run migrations as a separate one-off job. Supabase Session Pooler can finish
 # the SQL successfully but time out while asyncpg closes the connection. Accept
-# only that exact post-success condition; all SQL and connection errors remain fatal.
+# only a timeout after every discovered migration has been confirmed complete;
+# all SQL, connection and partial-migration failures remain fatal.
 echo "Running database migrations..."
 rm -f "$MIGRATION_LOG"
 set +e
@@ -50,8 +51,16 @@ migration_status=${PIPESTATUS[0]}
 set -e
 
 if (( migration_status != 0 )); then
-  if grep -Eq '^Migration (already applied|applied): .+' "$MIGRATION_LOG" \
-    && grep -q '^TimeoutError$' "$MIGRATION_LOG"; then
+  migration_count="$(
+    sed -nE 's/^Discovered ([0-9]+) migration\(s\)$/\1/p' "$MIGRATION_LOG" | tail -n 1
+  )"
+  completed_count="$(
+    grep -Ec '^Migration (already applied|applied): .+' "$MIGRATION_LOG" || true
+  )"
+
+  if [[ "$migration_count" =~ ^[0-9]+$ ]] \
+    && (( completed_count == migration_count )) \
+    && { (( migration_status == 124 )) || grep -q '^TimeoutError$' "$MIGRATION_LOG"; }; then
     echo "Migration completed; Supabase pooler close timeout was safely ignored."
   else
     echo "Database migration failed with status ${migration_status}." >&2
