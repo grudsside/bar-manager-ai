@@ -31,7 +31,7 @@ def test_deploy_only_ignores_pooler_timeout_after_all_migrations_finish() -> Non
     deploy_script = (
         REPO_ROOT / "deploy" / "firstvds" / "scripts" / "deploy.sh"
     ).read_text(encoding="utf-8")
-    assert "Migration (already applied|applied)" in deploy_script
+    assert "grep -Ecx 'Migration (already applied|applied): .+'" in deploy_script
     assert "completed_count == migration_count" in deploy_script
     assert "migration_status == 124" in deploy_script
     assert "grep -q '^TimeoutError$'" in deploy_script
