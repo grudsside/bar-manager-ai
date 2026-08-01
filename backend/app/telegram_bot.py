@@ -62,10 +62,15 @@ async def telegram_api_call(
         raise RuntimeError("Telegram bot token is not configured")
 
     url = f"{TELEGRAM_API_BASE_URL}/bot{token}/{method}"
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
-        body = response.json()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            body = response.json()
+    except (httpx.HTTPError, ValueError):
+        # httpx exceptions can include the request URL, which contains the bot token.
+        # Replace them with a token-free error before anything reaches application logs.
+        raise RuntimeError(f"Telegram API {method} request failed") from None
 
     if not body.get("ok"):
         raise RuntimeError(f"Telegram API {method} failed")
