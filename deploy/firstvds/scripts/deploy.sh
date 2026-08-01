@@ -55,7 +55,7 @@ if (( migration_status != 0 )); then
     sed -nE 's/^Discovered ([0-9]+) migration\(s\)$/\1/p' "$MIGRATION_LOG" | tail -n 1
   )"
   completed_count="$(
-    grep -Ec '^Migration (already applied|applied): .+' "$MIGRATION_LOG" || true
+    grep -Ecx 'Migration (already applied|applied): .+' "$MIGRATION_LOG" || true
   )"
 
   if [[ "$migration_count" =~ ^[0-9]+$ ]] \
