@@ -24,9 +24,9 @@ git reset --hard origin/main
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 
-# Stop the public stack before schema changes and build the current API image.
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" stop caddy api >/dev/null 2>&1 || true
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" rm -f caddy api >/dev/null 2>&1 || true
+# Build and migrate without stopping the running public stack. The current API
+# and Caddy remain available until every migration has completed successfully.
+# A failed migration therefore leaves the last healthy release online.
 
 # Remove abandoned one-off migration containers from interrupted deployments.
 mapfile -t stale_migration_containers < <(
@@ -68,7 +68,7 @@ if (( migration_status != 0 )); then
   fi
 fi
 
-# Start the API only after migrations have completed successfully.
+# Replace the public containers only after migrations have completed successfully.
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
 
 docker image prune -f >/dev/null
