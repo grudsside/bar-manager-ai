@@ -6,7 +6,16 @@ from datetime import datetime, timezone
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 
 from .agent import run_agent
@@ -22,6 +31,7 @@ from .schemas import (
     TelegramWebhookResponse,
 )
 from .task_store import TaskNotFoundError, TaskStore, get_task_store
+from .telegram_bot import handle_telegram_update
 
 settings = get_settings()
 if settings.openai_api_key:
@@ -153,6 +163,7 @@ async def agent_chat(
 @app.post("/api/telegram/webhook", response_model=TelegramWebhookResponse)
 async def telegram_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_telegram_bot_api_secret_token: Annotated[str | None, Header()] = None,
     current: Settings = Depends(get_settings),
 ) -> TelegramWebhookResponse:
@@ -171,10 +182,8 @@ async def telegram_webhook(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
 
     update: dict[str, Any] = await request.json()
+    background_tasks.add_task(handle_telegram_update, update, current)
 
-    # Следующий этап: проверить белый список chat_id, сохранить исходное сообщение
-    # в PostgreSQL и поставить его в очередь ИИ-классификации. До подключения базы
-    # webhook подтверждает получение, но не выполняет необратимых действий.
     return TelegramWebhookResponse(
         update_id=update.get("update_id"),
         received_at=datetime.now(timezone.utc),
