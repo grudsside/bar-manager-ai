@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Бар-менеджер AI API"
+    app_version: str = "dev"
     environment: str = "development"
     app_base_url: str = "http://localhost:8000"
     frontend_origin: str = "http://localhost:8080"
