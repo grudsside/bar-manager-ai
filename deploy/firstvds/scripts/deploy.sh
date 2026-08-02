@@ -31,6 +31,7 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 
 # Build and migrate without stopping the running public stack. The current API
 # and Caddy remain available until every migration has completed successfully.
+# A failed migration therefore leaves the last healthy release online.
 mapfile -t stale_migration_containers < <(
   docker ps -aq --filter "name=bar-manager-ai-api-run-"
 )
