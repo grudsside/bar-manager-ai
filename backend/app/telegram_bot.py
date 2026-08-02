@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -8,11 +9,14 @@ import httpx
 from .agent import run_agent
 from .config import Settings
 from .schemas import AgentChatRequest, AgentChatResponse
+from .telegram_store import TelegramConversationStore, get_telegram_store
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_HISTORY_LIMIT = 12
 
 logger = logging.getLogger(__name__)
+_chat_locks: dict[int, asyncio.Lock] = {}
 
 
 def split_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
@@ -77,17 +81,34 @@ async def telegram_api_call(
     return body
 
 
-async def send_telegram_text(settings: Settings, chat_id: int, text: str) -> None:
-    for chunk in split_telegram_text(text):
-        await telegram_api_call(
-            settings,
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": chunk,
-                "link_preview_options": {"is_disabled": True},
-            },
-        )
+async def send_telegram_text(
+    settings: Settings,
+    chat_id: int,
+    text: str,
+    *,
+    store: TelegramConversationStore | None = None,
+    reply_to_message_id: int | None = None,
+) -> None:
+    for index, chunk in enumerate(split_telegram_text(text)):
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "link_preview_options": {"is_disabled": True},
+        }
+        if index == 0 and reply_to_message_id is not None:
+            payload["reply_parameters"] = {
+                "message_id": reply_to_message_id,
+                "allow_sending_without_reply": True,
+            }
+        body = await telegram_api_call(settings, "sendMessage", payload)
+        result = body.get("result")
+        if store is not None and isinstance(result, dict):
+            await store.record_outgoing_message(
+                chat_id,
+                result,
+                chunk,
+                reply_to_message_id=reply_to_message_id,
+            )
 
 
 async def send_typing_action(settings: Settings, chat_id: int) -> None:
@@ -116,31 +137,64 @@ async def handle_telegram_update(update: dict[str, Any], settings: Settings) -> 
         logger.warning("Ignored Telegram message from unauthorized chat_id=%s", chat_id)
         return
 
-    text = message.get("text")
-    if not isinstance(text, str) or not text.strip():
-        await send_telegram_text(
-            settings,
-            chat_id,
-            "Пока я умею обрабатывать только текстовые сообщения.",
-        )
-        return
+    lock = _chat_locks.setdefault(chat_id, asyncio.Lock())
+    async with lock:
+        await _handle_authorized_message(update, message, chat_id, settings)
 
-    normalized = text.strip()
-    command = normalized.split(maxsplit=1)[0].split("@", maxsplit=1)[0].lower()
-    if command == "/start":
-        await send_telegram_text(
-            settings,
-            chat_id,
-            (
-                "Bar Manager AI подключён. Отправьте задачу, вопрос или описание "
-                "рабочей ситуации обычным текстом."
-            ),
-        )
-        return
 
-    await send_typing_action(settings, chat_id)
-
+async def _handle_authorized_message(
+    update: dict[str, Any],
+    message: dict[str, Any],
+    chat_id: int,
+    settings: Settings,
+) -> None:
+    store = get_telegram_store(settings.database_url)
+    record_id = None
     try:
+        if store is not None:
+            record_id = await store.record_incoming_update(update)
+            if record_id is None:
+                logger.info("Ignored duplicate Telegram update_id=%s", update.get("update_id"))
+                return
+
+        message_id = message.get("message_id")
+        reply_to_message_id = message_id if isinstance(message_id, int) else None
+        text = message.get("text")
+        if not isinstance(text, str) or not text.strip():
+            await send_telegram_text(
+                settings,
+                chat_id,
+                "Пока я умею обрабатывать только текстовые сообщения.",
+                store=store,
+                reply_to_message_id=reply_to_message_id,
+            )
+            if store is not None and record_id is not None:
+                await store.mark_completed(record_id)
+            return
+
+        normalized = text.strip()
+        command = normalized.split(maxsplit=1)[0].split("@", maxsplit=1)[0].lower()
+        if command == "/start":
+            await send_telegram_text(
+                settings,
+                chat_id,
+                (
+                    "Bar Manager AI подключён. Отправьте задачу, вопрос или описание "
+                    "рабочей ситуации обычным текстом. Я учитываю недавний контекст диалога."
+                ),
+                store=store,
+                reply_to_message_id=reply_to_message_id,
+            )
+            if store is not None and record_id is not None:
+                await store.mark_completed(record_id)
+            return
+
+        await send_typing_action(settings, chat_id)
+        recent_history = (
+            await store.recent_history(chat_id, limit=TELEGRAM_HISTORY_LIMIT)
+            if store is not None
+            else []
+        )
         result = await run_agent(
             AgentChatRequest(
                 message=normalized,
@@ -149,18 +203,38 @@ async def handle_telegram_update(update: dict[str, Any], settings: Settings) -> 
                     "telegram_chat_id": chat_id,
                     "telegram_message_id": message.get("message_id"),
                     "telegram_update_id": update.get("update_id"),
+                    "recent_conversation": recent_history,
                 },
             ),
             settings,
         )
-        await send_telegram_text(settings, chat_id, format_agent_response(result))
-    except Exception:
+        await send_telegram_text(
+            settings,
+            chat_id,
+            format_agent_response(result),
+            store=store,
+            reply_to_message_id=reply_to_message_id,
+        )
+        if store is not None and record_id is not None:
+            await store.mark_completed(record_id)
+    except Exception as exc:
         logger.exception("Telegram update processing failed")
+        if store is not None and record_id is not None:
+            try:
+                await store.mark_failed(record_id, type(exc).__name__)
+            except Exception:
+                logger.exception("Failed to mark Telegram message as failed")
         try:
             await send_telegram_text(
                 settings,
                 chat_id,
                 "Не удалось обработать сообщение. Попробуйте ещё раз через минуту.",
+                store=store,
+                reply_to_message_id=(
+                    message.get("message_id")
+                    if isinstance(message.get("message_id"), int)
+                    else None
+                ),
             )
         except Exception:
             logger.exception("Failed to send Telegram error message")
