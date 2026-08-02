@@ -107,7 +107,6 @@ def _filter(
         if filter_key in {"today", "сегодня"}:
             return (
                 task.due_at is not None
-                and _aware(task.due_at) >= now
                 and _aware(task.due_at).astimezone(LOCAL_TIMEZONE).date() == local_today
             )
         if filter_key in {"overdue", "просроченные"}:
