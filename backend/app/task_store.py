@@ -43,6 +43,16 @@ class TaskStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def complete_task(
+        self,
+        task_id: UUID,
+        result: str,
+        *,
+        actor_type: str = "telegram",
+    ) -> TaskOut:
+        raise NotImplementedError
+
+    @abstractmethod
     async def add_task_note(
         self,
         task_id: UUID,
@@ -130,6 +140,37 @@ class InMemoryTaskStore(TaskStore):
                 event_type="updated",
                 actor_type="owner",
                 payload=payload.model_dump(exclude_unset=True, mode="json"),
+                created_at=now,
+            )
+        )
+        return updated
+
+    async def complete_task(
+        self,
+        task_id: UUID,
+        result: str,
+        *,
+        actor_type: str = "telegram",
+    ) -> TaskOut:
+        current = await self.get_task(task_id)
+        if current.status not in {"new", "planned", "work", "waiting"}:
+            raise TaskNotFoundError(str(task_id))
+        normalized = _normalize_completion_result(result)
+        now = datetime.now(timezone.utc)
+        updated = current.model_copy(
+            update={
+                "status": "done",
+                "completed_at": now,
+                "updated_at": now,
+            }
+        )
+        self._tasks[task_id] = updated
+        self._events.setdefault(task_id, []).append(
+            TaskEventOut(
+                id=uuid4(),
+                event_type="completed_with_result",
+                actor_type=actor_type,
+                payload={"result": normalized},
                 created_at=now,
             )
         )
@@ -285,6 +326,45 @@ class PostgresTaskStore(TaskStore):
                 )
         return await self.get_task(task_id)
 
+    async def complete_task(
+        self,
+        task_id: UUID,
+        result: str,
+        *,
+        actor_type: str = "telegram",
+    ) -> TaskOut:
+        normalized = _normalize_completion_result(result)
+        pool = await self._get_pool()
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    """
+                    update tasks
+                    set status = 'done', completed_at = now(), updated_at = now()
+                    where id = $1
+                      and status in ('new', 'planned', 'work', 'waiting')
+                    returning id
+                    """,
+                    task_id,
+                )
+                if row is None:
+                    raise TaskNotFoundError(str(task_id))
+                await connection.execute(
+                    """
+                    insert into task_events (task_id, event_type, actor_type, payload)
+                    values (
+                        $1,
+                        'completed_with_result',
+                        $2,
+                        jsonb_build_object('result', $3::text)
+                    )
+                    """,
+                    task_id,
+                    actor_type,
+                    normalized,
+                )
+        return await self.get_task(task_id)
+
     async def add_task_note(
         self,
         task_id: UUID,
@@ -374,6 +454,15 @@ def _normalize_note(text: str) -> str:
         raise ValueError("Task note cannot be empty")
     if len(normalized) > 2_000:
         raise ValueError("Task note is too long")
+    return normalized
+
+
+def _normalize_completion_result(text: str) -> str:
+    normalized = " ".join(text.strip().split())
+    if not normalized:
+        raise ValueError("Task completion result cannot be empty")
+    if len(normalized) > 2_000:
+        raise ValueError("Task completion result is too long")
     return normalized
 
 
