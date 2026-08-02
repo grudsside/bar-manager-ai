@@ -6,10 +6,14 @@ on:
     paths:
       - "web/**"
       - ".github/workflows/frontend-ci.yml"
+      - ".github/workflows/publish-pages.yml"
+      - ".github/workflows/pages-smoke.yml"
   pull_request:
     paths:
       - "web/**"
       - ".github/workflows/frontend-ci.yml"
+      - ".github/workflows/publish-pages.yml"
+      - ".github/workflows/pages-smoke.yml"
 
 permissions:
   contents: read

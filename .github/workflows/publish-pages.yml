@@ -24,11 +24,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Check JavaScript syntax
-        run: node --check web/app.js
+        run: |
+          node --check web/app.js
+          node --check web/api-client.js
+          node --check web/inbox-ui.js
+          node --check web/service-worker.js
       - name: Validate manifest
         run: python -m json.tool web/manifest.webmanifest >/dev/null
       - name: Check required files
-        run: test -f web/index.html && test -f web/styles.css && test -f web/service-worker.js && test -f web/icon.svg
+        run: |
+          test -f web/index.html
+          test -f web/styles.css
+          test -f web/inbox.css
+          test -f web/app.js
+          test -f web/api-client.js
+          test -f web/inbox-ui.js
+          test -f web/service-worker.js
+          test -f web/icon.svg
+          test -f web/manifest.webmanifest
+      - name: Check live inbox references
+        run: |
+          grep -q "import('./inbox-ui.js')" web/api-client.js
+          grep -q "./inbox-ui.js" web/service-worker.js
+          grep -q "./inbox.css" web/service-worker.js
 
   deploy:
     needs: validate
