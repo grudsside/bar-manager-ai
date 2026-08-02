@@ -104,6 +104,42 @@ class ApiClient {
     });
   }
 
+  listInbox(status = null, limit = 100) {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    params.set('limit', String(limit));
+    return this.request(`/api/inbox?${params.toString()}`);
+  }
+
+  getInboxItem(messageId) {
+    return this.request(`/api/inbox/${encodeURIComponent(messageId)}`);
+  }
+
+  updateInboxItem(messageId, status) {
+    return this.request(`/api/inbox/${encodeURIComponent(messageId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+  }
+
+  createTaskFromInbox(messageId, payload) {
+    return this.request(`/api/inbox/${encodeURIComponent(messageId)}/task`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  listTelegramChats() {
+    return this.request('/api/telegram/chats');
+  }
+
+  updateTelegramChat(chatId, payload) {
+    return this.request(`/api/telegram/chats/${encodeURIComponent(chatId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  }
+
   agentChat(message, context = {}) {
     return this.request('/api/agent/chat', {
       method: 'POST',
@@ -152,12 +188,12 @@ function mountSettings(client) {
   title.textContent = 'Сервер и база данных';
 
   const description = document.createElement('p');
-  description.textContent = 'До подключения приложение продолжает хранить задачи локально. После настройки изменения синхронизируются с backend.';
+  description.textContent = 'После подключения задачи и Telegram-входящие загружаются из рабочей базы. При временной потере сети изменения задач остаются в локальной очереди.';
   description.style.color = 'var(--muted)';
   description.style.fontSize = '13px';
   description.style.lineHeight = '1.45';
 
-  const urlInput = createInput('url', client.config.baseUrl, 'https://ваш-backend.example.com');
+  const urlInput = createInput('url', client.config.baseUrl, 'https://api.gridsside.ru');
   const keyInput = createInput('password', client.config.ownerKey, 'Ключ владельца');
   const statusLine = document.createElement('p');
   statusLine.style.fontSize = '12px';
@@ -192,7 +228,7 @@ function mountSettings(client) {
     statusLine.textContent = 'Проверяю backend и доступ владельца…';
     try {
       const health = await client.health();
-      await client.listTasks();
+      await Promise.all([client.listTasks(), client.listInbox('new', 1)]);
       statusLine.textContent = `Соединение установлено: ${health.service}.`;
       statusLine.style.color = 'var(--olive)';
       window.dispatchEvent(new CustomEvent('bar-manager-api-configured'));
