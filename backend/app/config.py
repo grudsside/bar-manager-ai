@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_webhook_secret: str | None = None
     owner_telegram_id: int | None = None
+    daily_summary_hour_msk: int = 8
+    daily_summary_minute_msk: int = 0
 
     database_url: str | None = None
     supabase_url: str | None = None
