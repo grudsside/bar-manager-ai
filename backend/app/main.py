@@ -24,14 +24,27 @@ from .schemas import (
     AgentChatRequest,
     AgentChatResponse,
     HealthResponse,
+    InboxStatus,
     TaskCreate,
     TaskOut,
     TaskStatus,
     TaskUpdate,
+    TelegramChatOut,
+    TelegramChatUpdate,
+    TelegramInboxItemOut,
+    TelegramInboxTaskCreate,
+    TelegramInboxUpdate,
     TelegramWebhookResponse,
 )
 from .task_store import TaskNotFoundError, TaskStore, get_task_store
 from .telegram_bot import handle_telegram_update
+from .telegram_inbox_store import (
+    TelegramChatNotFoundError,
+    TelegramInboxAlreadyProcessedError,
+    TelegramInboxNotFoundError,
+    TelegramInboxStore,
+    get_telegram_inbox_store,
+)
 
 settings = get_settings()
 if settings.openai_api_key:
@@ -39,7 +52,7 @@ if settings.openai_api_key:
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.2.0",
+    version="0.3.0",
     docs_url="/docs" if settings.environment != "production" else None,
     redoc_url=None,
 )
@@ -71,6 +84,16 @@ def require_owner(
 
 def task_store(current: Settings = Depends(get_settings)) -> TaskStore:
     return get_task_store(current.database_url)
+
+
+def inbox_store(current: Settings = Depends(get_settings)) -> TelegramInboxStore:
+    store = get_telegram_inbox_store(current.database_url)
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not configured",
+        )
+    return store
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -139,6 +162,107 @@ async def update_task(
         return await store.update_task(task_id, payload)
     except TaskNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/inbox",
+    response_model=list[TelegramInboxItemOut],
+    dependencies=[Depends(require_owner)],
+)
+async def list_inbox(
+    inbox_status: Annotated[InboxStatus | None, Query(alias="status")] = None,
+    limit: Annotated[int, Query(ge=1, le=250)] = 100,
+    store: TelegramInboxStore = Depends(inbox_store),
+) -> list[TelegramInboxItemOut]:
+    return await store.list_inbox(inbox_status=inbox_status, limit=limit)
+
+
+@app.get(
+    "/api/inbox/{message_id}",
+    response_model=TelegramInboxItemOut,
+    dependencies=[Depends(require_owner)],
+)
+async def get_inbox_item(
+    message_id: UUID,
+    store: TelegramInboxStore = Depends(inbox_store),
+) -> TelegramInboxItemOut:
+    try:
+        return await store.get_inbox(message_id)
+    except TelegramInboxNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found") from exc
+
+
+@app.patch(
+    "/api/inbox/{message_id}",
+    response_model=TelegramInboxItemOut,
+    dependencies=[Depends(require_owner)],
+)
+async def update_inbox_item(
+    message_id: UUID,
+    payload: TelegramInboxUpdate,
+    store: TelegramInboxStore = Depends(inbox_store),
+) -> TelegramInboxItemOut:
+    try:
+        return await store.update_inbox_status(message_id, payload.status)
+    except TelegramInboxNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@app.post(
+    "/api/inbox/{message_id}/task",
+    response_model=TaskOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_owner)],
+)
+async def create_task_from_inbox(
+    message_id: UUID,
+    payload: TelegramInboxTaskCreate,
+    inbox: TelegramInboxStore = Depends(inbox_store),
+    tasks: TaskStore = Depends(task_store),
+) -> TaskOut:
+    try:
+        task_id = await inbox.create_task_from_inbox(message_id, payload)
+        return await tasks.get_task(task_id)
+    except TelegramInboxNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inbox item not found") from exc
+    except TelegramInboxAlreadyProcessedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Inbox item already processed") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/telegram/chats",
+    response_model=list[TelegramChatOut],
+    dependencies=[Depends(require_owner)],
+)
+async def list_telegram_chats(
+    store: TelegramInboxStore = Depends(inbox_store),
+) -> list[TelegramChatOut]:
+    return await store.list_chats()
+
+
+@app.patch(
+    "/api/telegram/chats/{chat_id}",
+    response_model=TelegramChatOut,
+    dependencies=[Depends(require_owner)],
+)
+async def update_telegram_chat(
+    chat_id: int,
+    payload: TelegramChatUpdate,
+    store: TelegramInboxStore = Depends(inbox_store),
+) -> TelegramChatOut:
+    try:
+        return await store.update_chat(
+            chat_id,
+            payload.model_dump(exclude_unset=True),
+        )
+    except TelegramChatNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Telegram chat not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
