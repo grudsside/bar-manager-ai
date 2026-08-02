@@ -29,8 +29,8 @@ echo "Preparing release ${RELEASE_VERSION}"
 
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 
-# Build and migrate without stopping the running public stack. The current API
-# and Caddy remain available until every migration has completed successfully.
+# Build and migrate without stopping the running public stack. The current API,
+# reminder worker and Caddy remain available until every migration succeeds.
 # A failed migration therefore leaves the last healthy release online.
 mapfile -t stale_migration_containers < <(
   docker ps -aq --filter "name=bar-manager-ai-api-run-"
@@ -40,7 +40,7 @@ if (( ${#stale_migration_containers[@]} > 0 )); then
 fi
 
 # A clean build plus a commit-specific APP_VERSION prevents Docker from silently
-# reusing an older API image after a source update.
+# reusing an older image after a source update. API and worker share this image.
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
   build --pull --no-cache api
 
@@ -70,10 +70,10 @@ if (( migration_status != 0 )); then
   fi
 fi
 
-# Replace the API only after migrations have completed. Caddy stays online and
-# reconnects to the new healthy container.
+# Replace API and reminder worker only after migrations have completed. Caddy
+# stays online and reconnects to the new healthy API container.
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
-  up -d --force-recreate --no-deps api
+  up -d --force-recreate --no-deps api reminder
 
 for attempt in {1..40}; do
   container_status="$(
@@ -92,9 +92,29 @@ for attempt in {1..40}; do
   sleep 3
 done
 
-container_version="$(docker exec bar-manager-ai-api printenv APP_VERSION)"
-if [[ "$container_version" != "$RELEASE_VERSION" ]]; then
-  echo "Wrong API image is running: expected ${RELEASE_VERSION}, got ${container_version}." >&2
+for attempt in {1..20}; do
+  reminder_status="$(
+    docker inspect --format '{{.State.Status}}' bar-manager-ai-reminder 2>/dev/null || true
+  )"
+  if [[ "$reminder_status" == "running" ]]; then
+    break
+  fi
+  if (( attempt == 20 )); then
+    echo "Reminder worker did not stay running." >&2
+    docker logs --tail=200 bar-manager-ai-reminder >&2
+    exit 1
+  fi
+  sleep 3
+done
+
+api_version="$(docker exec bar-manager-ai-api printenv APP_VERSION)"
+reminder_version="$(docker exec bar-manager-ai-reminder printenv APP_VERSION)"
+if [[ "$api_version" != "$RELEASE_VERSION" ]]; then
+  echo "Wrong API image is running: expected ${RELEASE_VERSION}, got ${api_version}." >&2
+  exit 1
+fi
+if [[ "$reminder_version" != "$RELEASE_VERSION" ]]; then
+  echo "Wrong reminder image is running: expected ${RELEASE_VERSION}, got ${reminder_version}." >&2
   exit 1
 fi
 
@@ -123,6 +143,7 @@ print(json.dumps(data, ensure_ascii=False, indent=2))
 PY
     then
       echo "Deployment is healthy and verified: release ${RELEASE_VERSION}"
+      echo "Task reminder worker is running: release ${reminder_version}"
       exit 0
     fi
   fi
