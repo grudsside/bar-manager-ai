@@ -5,11 +5,15 @@ from typing import Any
 from .config import Settings
 from .task_history import format_task_card
 from .task_store import get_task_store
+from .telegram_task_archive_commands import (
+    ARCHIVE_COMMANDS,
+    maybe_handle_task_archive_command,
+)
 
 ACTIVE_STATUSES = {"new", "planned", "work", "waiting"}
 TASK_INFO_COMMANDS = {"/task_info", "/info"}
 TASK_NOTE_COMMANDS = {"/note"}
-TASK_HISTORY_COMMANDS = TASK_INFO_COMMANDS | TASK_NOTE_COMMANDS
+TASK_HISTORY_COMMANDS = TASK_INFO_COMMANDS | TASK_NOTE_COMMANDS | ARCHIVE_COMMANDS
 
 
 async def maybe_handle_task_history_command(
@@ -25,6 +29,16 @@ async def maybe_handle_task_history_command(
     command = parts[0].split("@", maxsplit=1)[0].lower() if parts else ""
     if command not in TASK_HISTORY_COMMANDS:
         return False
+
+    if command in ARCHIVE_COMMANDS:
+        return await maybe_handle_task_archive_command(
+            text,
+            chat_id=chat_id,
+            source_message_id=source_message_id,
+            settings=settings,
+            send_text=send_text,
+            conversation_store=conversation_store,
+        )
 
     argument = parts[1].strip() if len(parts) > 1 else ""
     number, note_text = _parse_number_and_text(argument)
