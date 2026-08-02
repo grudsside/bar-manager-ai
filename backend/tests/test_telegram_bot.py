@@ -5,7 +5,11 @@ import pytest
 from app.agent import build_agent_input
 from app.schemas import AgentChatRequest, AgentChatResponse
 from app.telegram_bot import format_agent_response, split_telegram_text
-from app.telegram_store import _forward_metadata, _telegram_name
+from app.telegram_store import (
+    _attachments_metadata,
+    _forward_metadata,
+    _telegram_name,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +62,32 @@ def test_forward_metadata_only_keeps_forward_fields() -> None:
     assert metadata == {"forward_sender_name": "Источник", "forward_date": 123}
 
 
+def test_attachment_metadata_keeps_largest_photo_and_documents() -> None:
+    metadata = _attachments_metadata(
+        {
+            "photo": [
+                {"file_id": "small", "width": 90, "height": 90},
+                {"file_id": "large", "width": 1280, "height": 720},
+            ],
+            "document": {
+                "file_id": "document-id",
+                "file_name": "report.pdf",
+                "mime_type": "application/pdf",
+                "file_size": 2048,
+            },
+        }
+    )
+
+    assert metadata[0] == {
+        "type": "photo",
+        "file_id": "large",
+        "width": 1280,
+        "height": 720,
+    }
+    assert metadata[1]["type"] == "document"
+    assert metadata[1]["file_name"] == "report.pdf"
+
+
 def test_webhook_dispatches_processing_as_background_task() -> None:
     main_module = (REPO_ROOT / "backend" / "app" / "main.py").read_text(
         encoding="utf-8"
@@ -68,7 +98,7 @@ def test_webhook_dispatches_processing_as_background_task() -> None:
     assert "x_telegram_bot_api_secret_token" in main_module
 
 
-def test_telegram_memory_is_persisted_and_passed_to_agent() -> None:
+def test_telegram_memory_is_persisted_and_passed_to_owner_agent() -> None:
     bot_module = (REPO_ROOT / "backend" / "app" / "telegram_bot.py").read_text(
         encoding="utf-8"
     )
@@ -79,7 +109,7 @@ def test_telegram_memory_is_persisted_and_passed_to_agent() -> None:
         REPO_ROOT / "backend" / "migrations" / "002_telegram_conversation_memory.sql"
     ).read_text(encoding="utf-8")
 
-    assert "record_incoming_update(update)" in bot_module
+    assert "record_incoming_update(" in bot_module
     assert "recent_history(chat_id" in bot_module
     assert 'context={"recent_conversation": recent_history}' in bot_module
     assert "telegram_chat_id" not in bot_module
@@ -90,6 +120,21 @@ def test_telegram_memory_is_persisted_and_passed_to_agent() -> None:
     assert "on conflict do nothing" in store_module
     assert "telegram_messages_update_id_unique_idx" in migration
     assert "processing_status" in migration
+
+
+def test_non_owner_chats_are_collected_without_bot_replies() -> None:
+    bot_module = (REPO_ROOT / "backend" / "app" / "telegram_bot.py").read_text(
+        encoding="utf-8"
+    )
+
+    collector = bot_module.split("async def _handle_collection_message", maxsplit=1)[1]
+    collector = collector.split("async def _handle_authorized_message", maxsplit=1)[0]
+
+    assert "chat_access(chat_id)" in bot_module
+    assert "not access.get(\"allowed\")" in bot_module
+    assert "analyze_telegram_message(" in collector
+    assert "save_inbox_analysis(" in collector
+    assert "send_telegram_text(" not in collector
 
 
 def test_agent_input_uses_history_without_exposing_technical_metadata() -> None:
