@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -15,6 +16,46 @@ from .telegram_task_commands import (
 
 LOCAL_TIMEZONE = timezone(timedelta(hours=3), name="MSK")
 SEARCH_COMMANDS = {"/find"}
+TOKEN_PATTERN = re.compile(r"[0-9a-zа-яё]+", re.IGNORECASE)
+RUSSIAN_SUFFIXES = (
+    "иями",
+    "ями",
+    "ами",
+    "ого",
+    "ему",
+    "ому",
+    "ыми",
+    "ими",
+    "ая",
+    "яя",
+    "ое",
+    "ее",
+    "ые",
+    "ие",
+    "ую",
+    "юю",
+    "ий",
+    "ый",
+    "ой",
+    "ов",
+    "ев",
+    "ей",
+    "ам",
+    "ям",
+    "ах",
+    "ях",
+    "ом",
+    "ем",
+    "а",
+    "я",
+    "ы",
+    "и",
+    "у",
+    "ю",
+    "е",
+    "о",
+    "ь",
+)
 TASK_FILTERS = {
     "today": "на сегодня",
     "сегодня": "на сегодня",
@@ -130,7 +171,7 @@ def _search(
     indexed: list[tuple[int, TaskOut]],
     query: str,
 ) -> list[tuple[int, TaskOut]]:
-    terms = [term for term in query.casefold().split() if term]
+    terms = _search_tokens(query)
     if not terms:
         return []
 
@@ -145,10 +186,33 @@ def _search(
                 VENUE_LABELS.get(task.venue_code, ""),
             )
             if part
-        ).casefold()
-        if all(term in haystack for term in terms):
+        )
+        words = _search_tokens(haystack)
+        if all(any(_word_matches(term, word) for word in words) for term in terms):
             result.append((number, task))
     return result
+
+
+def _search_tokens(value: str) -> list[str]:
+    return [_stem_search_word(token) for token in TOKEN_PATTERN.findall(value.casefold())]
+
+
+def _stem_search_word(word: str) -> str:
+    normalized = word.replace("ё", "е")
+    if len(normalized) < 5 or not any("а" <= char <= "я" for char in normalized):
+        return normalized
+
+    for suffix in RUSSIAN_SUFFIXES:
+        if normalized.endswith(suffix) and len(normalized) - len(suffix) >= 4:
+            return normalized[: -len(suffix)]
+    return normalized
+
+
+def _word_matches(term: str, candidate: str) -> bool:
+    if term == candidate:
+        return True
+    shorter, longer = sorted((term, candidate), key=len)
+    return len(shorter) >= 5 and len(longer) - len(shorter) <= 2 and longer.startswith(shorter)
 
 
 def _format_results(

@@ -90,6 +90,23 @@ def test_search_checks_title_description_and_venue() -> None:
     assert _search(indexed, "кофемолка") == []
 
 
+def test_search_matches_common_russian_word_forms() -> None:
+    indexed = [
+        (
+            1,
+            make_task(
+                "Проверить остатки сиропов",
+                description="Сверить поставку со складским отчётом",
+            ),
+        )
+    ]
+
+    assert [number for number, _ in _search(indexed, "сиропы")] == [1]
+    assert [number for number, _ in _search(indexed, "остатков")] == [1]
+    assert [number for number, _ in _search(indexed, "поставка") ] == [1]
+    assert [number for number, _ in _search(indexed, "складской отчёт")] == [1]
+
+
 def test_filtered_output_keeps_original_number_and_explains_safety() -> None:
     task = make_task("Проверить остатки", priority="critical")
 
@@ -118,6 +135,7 @@ def test_telegram_search_routing_contract() -> None:
     )
     assert 'SEARCH_COMMANDS = {"/find"}' in commands
     assert 'command == "/tasks" and bool(argument)' in commands
+    assert "RUSSIAN_SUFFIXES" in commands
     assert "Номера совпадают с общим списком /tasks" in commands
     assert "/tasks <filter>" in bot
     assert "/find <текст>" in bot
