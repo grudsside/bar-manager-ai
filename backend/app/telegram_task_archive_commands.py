@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .config import Settings
 from .task_history import format_task_card
 from .task_store import get_task_store
 
+LOCAL_TIMEZONE = timezone(timedelta(hours=3), name="MSK")
 ARCHIVE_STATUSES = {"done", "cancelled"}
 ARCHIVE_LIST_COMMANDS = {"/archive", "/completed", "/closed"}
 ARCHIVE_INFO_COMMANDS = {"/archive_info", "/closed_info"}
@@ -181,7 +182,7 @@ def _format_datetime(value: datetime | None) -> str:
     if value is None:
         return "дата не указана"
     aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return aware.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    return aware.astimezone(LOCAL_TIMEZONE).strftime("%d.%m.%Y %H:%M")
 
 
 def _parse_number(value: str) -> int:
