@@ -10,6 +10,7 @@ from .daily_summary import (
     daily_summary_dedupe_key,
     daily_summary_schedule,
 )
+from .recurring_store import get_recurring_rule_store
 from .reminder_store import ClaimedReminder, get_reminder_store
 from .task_reminders import build_task_reminder, select_reminder_kind
 from .task_store import get_task_store
@@ -34,11 +35,16 @@ async def run_reminder_cycle() -> int:
         raise RuntimeError("Telegram configuration is required for reminder worker")
 
     task_store = get_task_store(settings.database_url)
+    recurring_store = get_recurring_rule_store(settings.database_url)
     reminder_store = get_reminder_store(settings.database_url)
-    if reminder_store is None:
-        raise RuntimeError("Reminder store is unavailable")
+    if recurring_store is None or reminder_store is None:
+        raise RuntimeError("Worker stores are unavailable")
 
     now = datetime.now(timezone.utc)
+    generated = await recurring_store.generate_due_tasks(now=now)
+    if generated:
+        logger.info("Recurring tasks generated: count=%s", generated)
+
     tasks = await task_store.list_tasks()
     for task in tasks:
         kind = select_reminder_kind(task, now=now)
@@ -123,7 +129,7 @@ async def _deliver(
 
 
 async def main() -> None:
-    logger.info("Task reminder and daily summary worker started")
+    logger.info("Task generation, reminder and daily summary worker started")
     while True:
         try:
             delivered = await run_reminder_cycle()

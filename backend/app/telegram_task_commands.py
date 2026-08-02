@@ -6,6 +6,12 @@ from uuid import UUID
 
 from .config import Settings
 from .pending_action_store import get_pending_action_store
+from .recurring_rules import ExtractedRecurringRule, format_recurrence
+from .recurring_store import (
+    RecurringRuleCreate,
+    RecurringRuleNotFoundError,
+    get_recurring_rule_store,
+)
 from .schemas import TaskCreate, TaskOut, TaskUpdate
 from .task_drafts import extract_task_draft
 from .task_store import TaskNotFoundError, get_task_store
@@ -156,6 +162,7 @@ async def maybe_handle_task_command(
 
     pending_store = get_pending_action_store(settings.database_url)
     task_store = get_task_store(settings.database_url)
+    recurring_store = get_recurring_rule_store(settings.database_url)
 
     async def reply(message: str) -> None:
         await send_text(
@@ -287,6 +294,63 @@ async def maybe_handle_task_command(
             return True
         await pending_store.resolve(pending.id, "confirmed")
         await reply(format_status_result(task))
+        return True
+
+    if pending.action_type == "create_recurring_rule":
+        if recurring_store is None:
+            await pending_store.resolve(pending.id, "cancelled")
+            await reply("Не удалось создать правило: база данных недоступна.")
+            return True
+        try:
+            draft = ExtractedRecurringRule.model_validate(pending.payload)
+            if draft.due_time is None or draft.clarification_question:
+                raise ValueError("Incomplete recurring rule")
+            next_due = datetime.fromisoformat(str(pending.payload["next_due_at"]))
+            original_text = str(pending.payload["original_text"])
+            rule = await recurring_store.create_rule(
+                RecurringRuleCreate(
+                    title=draft.title,
+                    description=draft.description,
+                    original_text=original_text,
+                    venue_code=draft.venue_code,
+                    priority=draft.priority,
+                    frequency=draft.frequency,
+                    weekdays=draft.weekdays,
+                    due_time=draft.due_time,
+                    next_due_at=next_due,
+                    source_chat_id=chat_id,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            await pending_store.resolve(pending.id, "cancelled")
+            await reply("Не удалось создать повторяющуюся задачу: проект повреждён.")
+            return True
+        await pending_store.resolve(pending.id, "confirmed")
+        await reply(
+            "Повторяющаяся задача создана.\n"
+            f"{rule.title}\n"
+            f"Расписание: {format_recurrence(rule.frequency, rule.weekdays, rule.due_time)}\n"
+            f"Ближайший срок: {_format_datetime(rule.next_due_at)}"
+        )
+        return True
+
+    if pending.action_type == "disable_recurring_rule":
+        if recurring_store is None:
+            await pending_store.resolve(pending.id, "cancelled")
+            await reply("Не удалось отключить правило: база данных недоступна.")
+            return True
+        try:
+            rule_id = UUID(str(pending.payload.get("rule_id")))
+            rule = await recurring_store.disable_rule(rule_id)
+        except (RecurringRuleNotFoundError, TypeError, ValueError):
+            await pending_store.resolve(pending.id, "cancelled")
+            await reply("Не удалось отключить правило: оно больше не доступно.")
+            return True
+        await pending_store.resolve(pending.id, "confirmed")
+        await reply(
+            "Повторяющаяся задача отключена.\n"
+            f"Правило: {rule.title}"
+        )
         return True
 
     await pending_store.resolve(pending.id, "cancelled")
