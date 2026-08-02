@@ -5,6 +5,7 @@ on:
     paths:
       - "deploy/firstvds/**"
       - "backend/app/config.py"
+      - "backend/tests/test_verify_production.py"
       - ".env.example"
       - ".github/workflows/deploy-firstvds.yml"
       - ".github/workflows/deployment-ci.yml"
@@ -13,6 +14,7 @@ on:
     paths:
       - "deploy/firstvds/**"
       - "backend/app/config.py"
+      - "backend/tests/test_verify_production.py"
       - ".env.example"
       - ".github/workflows/deploy-firstvds.yml"
       - ".github/workflows/deployment-ci.yml"
@@ -33,6 +35,16 @@ jobs:
           bash -n deploy/firstvds/scripts/configure-instance.sh
           bash -n deploy/firstvds/scripts/deploy.sh
 
+      - name: Validate production verifier
+        run: |
+          python -m py_compile deploy/firstvds/scripts/verify-production.py
+          grep -q "database_configured" deploy/firstvds/scripts/verify-production.py
+          grep -q "openai_configured" deploy/firstvds/scripts/verify-production.py
+          grep -q "telegram_configured" deploy/firstvds/scripts/verify-production.py
+          grep -q "/api/inbox?limit=1" deploy/firstvds/scripts/verify-production.py
+          grep -q "/api/telegram/chats" deploy/firstvds/scripts/verify-production.py
+          grep -q "getWebhookInfo" deploy/firstvds/scripts/verify-production.py
+
       - name: Validate Docker Compose
         run: |
           cp deploy/firstvds/.env.example deploy/firstvds/.env
@@ -46,6 +58,6 @@ jobs:
       - name: Validate Caddyfile
         run: |
           docker run --rm \
-            -e API_DOMAIN=uhalovgrigorij40731.fvds.ru \
+            -e API_DOMAIN=api.gridsside.ru \
             -v "$PWD/deploy/firstvds/Caddyfile:/etc/caddy/Caddyfile:ro" \
             caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
