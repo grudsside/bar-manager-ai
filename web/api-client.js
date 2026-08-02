@@ -252,12 +252,22 @@ function mountSettings(client) {
   grid.append(card);
 }
 
+function mountInboxStyles() {
+  if (document.querySelector('link[data-bar-manager-inbox-styles]')) return;
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = './inbox.css';
+  link.dataset.barManagerInboxStyles = 'true';
+  document.head.append(link);
+}
+
 export async function initApiClient() {
   const client = new ApiClient();
   if (document.readyState === 'loading') {
     await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
   }
   mountSettings(client);
+  mountInboxStyles();
   try {
     const inboxModule = await import('./inbox-ui.js');
     await inboxModule.initInboxUI(client);
