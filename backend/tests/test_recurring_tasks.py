@@ -90,6 +90,7 @@ def test_recurring_task_schema_and_worker_contract() -> None:
     assert "for update skip locked" in store
     assert "on conflict do nothing" in store
     assert "STALE_OCCURRENCE_LIMIT" in store
+    assert "'recurring_rule_id', $2::uuid::text" in store
     assert "generate_due_tasks" in worker
     assert "maybe_handle_recurring_command" in bot
     assert bot.index("maybe_handle_recurring_command") < bot.index(

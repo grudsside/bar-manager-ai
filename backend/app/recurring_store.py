@@ -230,7 +230,7 @@ class RecurringRuleStore:
                                     'generated_from_recurring_rule',
                                     'system',
                                     jsonb_build_object(
-                                        'recurring_rule_id', $2::text,
+                                        'recurring_rule_id', $2::uuid::text,
                                         'due_at', $3::timestamptz
                                     )
                                 )
