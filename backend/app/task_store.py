@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -13,6 +14,15 @@ from .schemas import TaskCreate, TaskOut, TaskUpdate
 
 class TaskNotFoundError(LookupError):
     pass
+
+
+@dataclass(frozen=True)
+class TaskEventOut:
+    id: UUID
+    event_type: str
+    actor_type: str
+    payload: dict[str, Any]
+    created_at: datetime
 
 
 class TaskStore(ABC):
@@ -32,10 +42,20 @@ class TaskStore(ABC):
     async def update_task(self, task_id: UUID, payload: TaskUpdate) -> TaskOut:
         raise NotImplementedError
 
+    @abstractmethod
+    async def list_task_events(
+        self,
+        task_id: UUID,
+        *,
+        limit: int = 10,
+    ) -> list[TaskEventOut]:
+        raise NotImplementedError
+
 
 class InMemoryTaskStore(TaskStore):
     def __init__(self) -> None:
         self._tasks: dict[UUID, TaskOut] = {}
+        self._events: dict[UUID, list[TaskEventOut]] = {}
 
     async def list_tasks(self, *, status: str | None = None) -> list[TaskOut]:
         rows = list(self._tasks.values())
@@ -70,6 +90,15 @@ class InMemoryTaskStore(TaskStore):
             updated_at=now,
         )
         self._tasks[row.id] = row
+        self._events.setdefault(row.id, []).append(
+            TaskEventOut(
+                id=uuid4(),
+                event_type="created",
+                actor_type="owner",
+                payload=payload.model_dump(mode="json"),
+                created_at=now,
+            )
+        )
         return row
 
     async def update_task(self, task_id: UUID, payload: TaskUpdate) -> TaskOut:
@@ -81,10 +110,35 @@ class InMemoryTaskStore(TaskStore):
             changes["completed_at"] = datetime.now(timezone.utc)
         elif "status" in changes and changes["status"] != "done":
             changes["completed_at"] = None
-        changes["updated_at"] = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        changes["updated_at"] = now
         updated = current.model_copy(update=changes)
         self._tasks[task_id] = updated
+        self._events.setdefault(task_id, []).append(
+            TaskEventOut(
+                id=uuid4(),
+                event_type="updated",
+                actor_type="owner",
+                payload=payload.model_dump(exclude_unset=True, mode="json"),
+                created_at=now,
+            )
+        )
         return updated
+
+    async def list_task_events(
+        self,
+        task_id: UUID,
+        *,
+        limit: int = 10,
+    ) -> list[TaskEventOut]:
+        await self.get_task(task_id)
+        safe_limit = max(1, min(limit, 50))
+        rows = sorted(
+            self._events.get(task_id, []),
+            key=lambda event: event.created_at,
+            reverse=True,
+        )
+        return rows[:safe_limit]
 
 
 class PostgresTaskStore(TaskStore):
@@ -202,6 +256,28 @@ class PostgresTaskStore(TaskStore):
                 )
         return await self.get_task(task_id)
 
+    async def list_task_events(
+        self,
+        task_id: UUID,
+        *,
+        limit: int = 10,
+    ) -> list[TaskEventOut]:
+        await self.get_task(task_id)
+        safe_limit = max(1, min(limit, 50))
+        pool = await self._get_pool()
+        rows = await pool.fetch(
+            """
+            select id, event_type, actor_type, payload, created_at
+            from task_events
+            where task_id = $1
+            order by created_at desc, id desc
+            limit $2
+            """,
+            task_id,
+            safe_limit,
+        )
+        return [_task_event_from_record(row) for row in rows]
+
 
 _TASK_SELECT = """
 select
@@ -228,6 +304,17 @@ left join venues v on v.id = t.venue_id
 
 def _task_from_record(row: asyncpg.Record) -> TaskOut:
     return TaskOut(**dict(row))
+
+
+def _task_event_from_record(row: asyncpg.Record) -> TaskEventOut:
+    values = dict(row)
+    payload = values.get("payload")
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, dict):
+        payload = {}
+    values["payload"] = payload
+    return TaskEventOut(**values)
 
 
 async def _resolve_venue_id(pool: asyncpg.Pool, venue_code: str | None) -> UUID | None:
