@@ -190,5 +190,6 @@ def test_telegram_history_and_completion_routing_contract() -> None:
     assert 'COMPLETION_COMMANDS = {"/complete", "/finish"}' in completion_command
     assert "complete_task" in store
     assert "completed_with_result" in store
-    assert "/task_info N" in bot
-    assert "/complete N <результат>" in bot
+    assert "Создание, разбор и управление задачами выполняются" in bot
+    assert "/task_info N" not in bot
+    assert "/complete N <результат>" not in bot
