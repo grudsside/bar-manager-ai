@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from agents import Agent, Runner
 
 from .config import Settings
@@ -18,6 +20,10 @@ SYSTEM_INSTRUCTIONS = """
 - предупреждать о рисках, пропущенных данных и противоречиях;
 - не выдумывать продажи, остатки, списания, сроки или решения руководителя;
 - явно отделять факты от предположений.
+
+В контексте приложения может быть передана недавняя история диалога. Используй её,
+чтобы понимать ссылки вроде «это», «тогда», «продолжай» и сохранять последовательность
+обсуждения. Не считай историю подтверждением действий и не повторяй её без необходимости.
 
 Ты не должен самостоятельно отправлять сообщения, удалять данные, менять сроки или
 закрывать важные задачи. Для таких действий всегда указывай, что требуется подтверждение владельца.
@@ -41,7 +47,13 @@ async def run_agent(request: AgentChatRequest, settings: Settings) -> AgentChatR
 
     context_text = ""
     if request.context:
-        context_text = f"\n\nКонтекст приложения:\n{request.context}"
+        serialized_context = json.dumps(
+            request.context,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        context_text = f"\n\nКонтекст приложения (JSON):\n{serialized_context}"
     if request.task_id:
         context_text += f"\nАктивная задача: {request.task_id}"
 
