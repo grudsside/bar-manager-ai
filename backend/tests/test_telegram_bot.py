@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas import AgentChatResponse
+from app.agent import build_agent_input
+from app.schemas import AgentChatRequest, AgentChatResponse
 from app.telegram_bot import format_agent_response, split_telegram_text
 from app.telegram_store import _forward_metadata, _telegram_name
 
@@ -80,7 +81,10 @@ def test_telegram_memory_is_persisted_and_passed_to_agent() -> None:
 
     assert "record_incoming_update(update)" in bot_module
     assert "recent_history(chat_id" in bot_module
-    assert '"recent_conversation": recent_history' in bot_module
+    assert 'context={"recent_conversation": recent_history}' in bot_module
+    assert "telegram_chat_id" not in bot_module
+    assert "telegram_message_id" not in bot_module
+    assert "telegram_update_id" not in bot_module
     assert "record_outgoing_message" in bot_module
     assert "mark_completed(record_id)" in bot_module
     assert "on conflict do nothing" in store_module
@@ -88,9 +92,27 @@ def test_telegram_memory_is_persisted_and_passed_to_agent() -> None:
     assert "processing_status" in migration
 
 
-def test_agent_serializes_context_as_json() -> None:
-    agent_module = (REPO_ROOT / "backend" / "app" / "agent.py").read_text(
-        encoding="utf-8"
+def test_agent_input_uses_history_without_exposing_technical_metadata() -> None:
+    prompt = build_agent_input(
+        AgentChatRequest(
+            message="Какое кодовое слово?",
+            context={
+                "source": "telegram",
+                "telegram_chat_id": 123,
+                "telegram_message_id": 45,
+                "telegram_update_id": 67,
+                "recent_conversation": [
+                    {"role": "user", "content": "Кодовое слово — Сапфир."},
+                    {"role": "assistant", "content": "Запомнил."},
+                ],
+            },
+        )
     )
-    assert "json.dumps" in agent_module
-    assert "Контекст приложения (JSON)" in agent_module
+
+    assert "Какое кодовое слово?" in prompt
+    assert "Кодовое слово — Сапфир." in prompt
+    assert "Запомнил." in prompt
+    assert "telegram_chat_id" not in prompt
+    assert "telegram_message_id" not in prompt
+    assert "telegram_update_id" not in prompt
+    assert '"source"' not in prompt
