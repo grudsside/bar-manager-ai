@@ -106,7 +106,7 @@ def write_env(updates: dict[str, str]) -> None:
         raise SetupError(f"Environment file not found: {ENV_FILE}")
     current = ENV_FILE.read_text(encoding="utf-8")
     updated = update_env_text(current, updates)
-    temporary = ENV_FILE.with_suffix(".env.tmp")
+    temporary = ENV_FILE.with_name(f"{ENV_FILE.name}.tmp")
     temporary.write_text(updated, encoding="utf-8")
     temporary.chmod(stat.S_IRUSR | stat.S_IWUSR)
     temporary.replace(ENV_FILE)
