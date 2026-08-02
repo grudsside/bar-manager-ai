@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
 from agents import Agent, Runner
 from pydantic import BaseModel, Field
@@ -9,7 +8,7 @@ from pydantic import BaseModel, Field
 from .config import Settings
 from .schemas import TaskPriority, VenueCode
 
-LOCAL_TIMEZONE = ZoneInfo("Europe/Moscow")
+LOCAL_TIMEZONE = timezone(timedelta(hours=3), name="MSK")
 
 
 class ExtractedTaskDraft(BaseModel):
