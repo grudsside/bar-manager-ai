@@ -24,7 +24,67 @@ class TelegramConversationStore:
             )
         return self._pool
 
-    async def record_incoming_update(self, update: dict[str, Any]) -> UUID | None:
+    async def register_chat(
+        self,
+        update: dict[str, Any],
+        *,
+        allow: bool = False,
+    ) -> int | None:
+        message = update.get("message")
+        if not isinstance(message, dict):
+            return None
+        chat = message.get("chat")
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if not isinstance(chat_id, int):
+            return None
+        sender = message.get("from")
+        sender_name = _telegram_name(sender) if isinstance(sender, dict) else None
+        chat_title = _telegram_name(chat) if isinstance(chat, dict) else None
+        chat_title = chat_title or sender_name or f"Telegram chat {chat_id}"
+
+        pool = await self._get_pool()
+        await pool.execute(
+            """
+            insert into telegram_chats (chat_id, title, allowed)
+            values ($1, $2, $3)
+            on conflict (chat_id) do update
+            set title = excluded.title,
+                allowed = telegram_chats.allowed or excluded.allowed
+            """,
+            chat_id,
+            chat_title,
+            allow,
+        )
+        return chat_id
+
+    async def chat_access(self, chat_id: int) -> dict[str, Any] | None:
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            """
+            select
+                chat.chat_id,
+                chat.title,
+                chat.allowed,
+                chat.purpose,
+                venue.code as venue_code
+            from telegram_chats as chat
+            left join venues as venue on venue.id = chat.venue_id
+            where chat.chat_id = $1
+            """,
+            chat_id,
+        )
+        return dict(row) if row is not None else None
+
+    async def record_incoming_update(
+        self,
+        update: dict[str, Any],
+        *,
+        inbox_status: str = "new",
+        allow_chat: bool = False,
+    ) -> UUID | None:
+        if inbox_status not in {"new", "review", "confirmed", "dismissed", "ignored"}:
+            raise ValueError("Unsupported Telegram inbox status")
+
         message = update.get("message")
         if not isinstance(message, dict):
             return None
@@ -35,12 +95,12 @@ class TelegramConversationStore:
         if not isinstance(chat_id, int) or not isinstance(message_id, int):
             return None
 
+        await self.register_chat(update, allow=allow_chat)
+
         sender = message.get("from")
         sender_id = sender.get("id") if isinstance(sender, dict) else None
         sender_name = _telegram_name(sender) if isinstance(sender, dict) else None
-        chat_title = _telegram_name(chat) if isinstance(chat, dict) else None
-        chat_title = chat_title or sender_name or f"Telegram chat {chat_id}"
-        text = message.get("text")
+        text = message.get("text") or message.get("caption")
         message_text = text if isinstance(text, str) else None
         update_id = update.get("update_id")
         telegram_update_id = update_id if isinstance(update_id, int) else None
@@ -56,55 +116,45 @@ class TelegramConversationStore:
         )
 
         pool = await self._get_pool()
-        async with pool.acquire() as connection:
-            async with connection.transaction():
-                await connection.execute(
-                    """
-                    insert into telegram_chats (chat_id, title, allowed)
-                    values ($1, $2, true)
-                    on conflict (chat_id) do update
-                    set title = excluded.title,
-                        allowed = true
-                    """,
-                    chat_id,
-                    chat_title,
-                )
-                row = await connection.fetchrow(
-                    """
-                    insert into telegram_messages (
-                        chat_id,
-                        message_id,
-                        sender_id,
-                        sender_name,
-                        message_text,
-                        message_date,
-                        reply_to_message_id,
-                        forwarded_from,
-                        attachments,
-                        raw_update,
-                        telegram_update_id,
-                        direction,
-                        role,
-                        processing_status
-                    ) values (
-                        $1, $2, $3, $4, $5, $6, $7,
-                        $8::jsonb, '[]'::jsonb, $9::jsonb,
-                        $10, 'incoming', 'user', 'processing'
-                    )
-                    on conflict do nothing
-                    returning id
-                    """,
-                    chat_id,
-                    message_id,
-                    sender_id if isinstance(sender_id, int) else None,
-                    sender_name,
-                    message_text,
-                    message_date,
-                    reply_to_message_id if isinstance(reply_to_message_id, int) else None,
-                    json.dumps(_forward_metadata(message), ensure_ascii=False),
-                    json.dumps(update, ensure_ascii=False),
-                    telegram_update_id,
-                )
+        row = await pool.fetchrow(
+            """
+            insert into telegram_messages (
+                chat_id,
+                message_id,
+                sender_id,
+                sender_name,
+                message_text,
+                message_date,
+                reply_to_message_id,
+                forwarded_from,
+                attachments,
+                raw_update,
+                telegram_update_id,
+                direction,
+                role,
+                processing_status,
+                inbox_status
+            ) values (
+                $1, $2, $3, $4, $5, $6, $7,
+                $8::jsonb, $9::jsonb, $10::jsonb,
+                $11, 'incoming', 'user', 'processing', $12
+            )
+            on conflict do nothing
+            returning id
+            """,
+            chat_id,
+            message_id,
+            sender_id if isinstance(sender_id, int) else None,
+            sender_name,
+            message_text,
+            message_date,
+            reply_to_message_id if isinstance(reply_to_message_id, int) else None,
+            json.dumps(_forward_metadata(message), ensure_ascii=False),
+            json.dumps(_attachments_metadata(message), ensure_ascii=False),
+            json.dumps(update, ensure_ascii=False),
+            telegram_update_id,
+            inbox_status,
+        )
         return row["id"] if row is not None else None
 
     async def recent_history(self, chat_id: int, *, limit: int = 12) -> list[dict[str, str]]:
@@ -126,6 +176,32 @@ class TelegramConversationStore:
             {"role": row["role"], "content": row["message_text"]}
             for row in reversed(rows)
         ]
+
+    async def save_inbox_analysis(
+        self,
+        record_id: UUID,
+        *,
+        classification: str,
+        confidence: float,
+        analysis: dict[str, Any],
+    ) -> None:
+        pool = await self._get_pool()
+        await pool.execute(
+            """
+            update telegram_messages
+            set classification = $2,
+                confidence = $3,
+                analysis = $4::jsonb,
+                processing_status = 'completed',
+                processed_at = now(),
+                error_message = null
+            where id = $1
+            """,
+            record_id,
+            classification,
+            confidence,
+            json.dumps(analysis, ensure_ascii=False),
+        )
 
     async def mark_completed(self, record_id: UUID) -> None:
         pool = await self._get_pool()
@@ -160,6 +236,7 @@ class TelegramConversationStore:
             """
             update telegram_messages
             set processing_status = 'ignored',
+                inbox_status = 'ignored',
                 processed_at = now()
             where id = $1
             """,
@@ -203,16 +280,18 @@ class TelegramConversationStore:
                 direction,
                 role,
                 processing_status,
+                inbox_status,
                 processed_at
             ) values (
                 $1, $2, $3, $4, $5, $6, $7,
                 '[]'::jsonb, $8::jsonb,
-                'outgoing', 'assistant', 'completed', now()
+                'outgoing', 'assistant', 'completed', 'ignored', now()
             )
             on conflict (chat_id, message_id) do update
             set message_text = excluded.message_text,
                 raw_update = excluded.raw_update,
                 processing_status = 'completed',
+                inbox_status = 'ignored',
                 processed_at = now(),
                 error_message = null
             """,
@@ -247,6 +326,35 @@ def _forward_metadata(message: dict[str, Any]) -> dict[str, Any]:
         if key in message:
             metadata[key] = message[key]
     return metadata
+
+
+def _attachments_metadata(message: dict[str, Any]) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        largest = photos[-1]
+        if isinstance(largest, dict):
+            attachments.append(
+                {
+                    "type": "photo",
+                    "file_id": largest.get("file_id"),
+                    "width": largest.get("width"),
+                    "height": largest.get("height"),
+                }
+            )
+    for key in ("document", "video", "audio", "voice"):
+        value = message.get(key)
+        if isinstance(value, dict):
+            attachments.append(
+                {
+                    "type": key,
+                    "file_id": value.get("file_id"),
+                    "file_name": value.get("file_name"),
+                    "mime_type": value.get("mime_type"),
+                    "file_size": value.get("file_size"),
+                }
+            )
+    return attachments
 
 
 _stores: dict[str, TelegramConversationStore] = {}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -9,6 +10,7 @@ import httpx
 from .agent import run_agent
 from .config import Settings
 from .schemas import AgentChatRequest, AgentChatResponse
+from .telegram_inbox_analysis import analyze_telegram_message, fallback_inbox_analysis
 from .telegram_recurring_commands import maybe_handle_recurring_command
 from .telegram_store import TelegramConversationStore, get_telegram_store
 from .telegram_summary_commands import maybe_handle_summary_command
@@ -26,7 +28,6 @@ _chat_locks: dict[int, asyncio.Lock] = {}
 
 
 def split_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
-    """Split text into Telegram-safe chunks, preferring paragraph and word boundaries."""
     normalized = text.strip()
     if not normalized:
         return []
@@ -136,13 +137,96 @@ async def handle_telegram_update(update: dict[str, Any], settings: Settings) -> 
     if not isinstance(chat_id, int):
         return
 
-    if settings.owner_telegram_id is None or chat_id != settings.owner_telegram_id:
-        logger.warning("Ignored Telegram message from unauthorized chat_id=%s", chat_id)
-        return
+    store = get_telegram_store(settings.database_url)
+    is_owner_chat = (
+        settings.owner_telegram_id is not None
+        and chat_id == settings.owner_telegram_id
+    )
+    if store is not None:
+        await store.register_chat(update, allow=is_owner_chat)
 
     lock = _chat_locks.setdefault(chat_id, asyncio.Lock())
     async with lock:
-        await _handle_authorized_message(update, message, chat_id, settings)
+        if is_owner_chat:
+            await _handle_authorized_message(update, message, chat_id, settings)
+            return
+
+        if store is None:
+            logger.warning("Ignored Telegram chat without database: chat_id=%s", chat_id)
+            return
+        access = await store.chat_access(chat_id)
+        if access is None or not access.get("allowed"):
+            logger.info("Registered but ignored unapproved Telegram chat_id=%s", chat_id)
+            return
+        await _handle_collection_message(
+            update,
+            message,
+            chat_id,
+            settings,
+            store,
+            access,
+        )
+
+
+async def _handle_collection_message(
+    update: dict[str, Any],
+    message: dict[str, Any],
+    chat_id: int,
+    settings: Settings,
+    store: TelegramConversationStore,
+    access: dict[str, Any],
+) -> None:
+    record_id = None
+    try:
+        record_id = await store.record_incoming_update(
+            update,
+            inbox_status="new",
+            allow_chat=False,
+        )
+        if record_id is None:
+            logger.info("Ignored duplicate Telegram update_id=%s", update.get("update_id"))
+            return
+
+        text = message.get("text") or message.get("caption")
+        if isinstance(text, str) and text.strip():
+            raw_date = message.get("date")
+            message_date = (
+                datetime.fromtimestamp(raw_date, tz=timezone.utc)
+                if isinstance(raw_date, int)
+                else None
+            )
+            analysis = await analyze_telegram_message(
+                text,
+                settings=settings,
+                chat_title=str(access.get("title") or f"Telegram chat {chat_id}"),
+                chat_purpose=access.get("purpose"),
+                venue_code=access.get("venue_code"),
+                message_date=message_date,
+            )
+        else:
+            analysis = fallback_inbox_analysis(
+                "Сообщение без текста или с вложением требует ручной проверки"
+            )
+
+        await store.save_inbox_analysis(
+            record_id,
+            classification=analysis.classification,
+            confidence=analysis.confidence,
+            analysis=analysis.model_dump(mode="json"),
+        )
+        logger.info(
+            "Telegram message collected: chat_id=%s record_id=%s classification=%s",
+            chat_id,
+            record_id,
+            analysis.classification,
+        )
+    except Exception as exc:
+        logger.exception("Telegram inbox analysis failed: chat_id=%s", chat_id)
+        if record_id is not None:
+            try:
+                await store.mark_failed(record_id, type(exc).__name__)
+            except Exception:
+                logger.exception("Failed to mark Telegram inbox message as failed")
 
 
 async def _handle_authorized_message(
@@ -155,7 +239,11 @@ async def _handle_authorized_message(
     record_id = None
     try:
         if store is not None:
-            record_id = await store.record_incoming_update(update)
+            record_id = await store.record_incoming_update(
+                update,
+                inbox_status="ignored",
+                allow_chat=True,
+            )
             if record_id is None:
                 logger.info("Ignored duplicate Telegram update_id=%s", update.get("update_id"))
                 return
@@ -182,21 +270,13 @@ async def _handle_authorized_message(
                 settings,
                 chat_id,
                 (
-                    "Bar Manager AI подключён. Я учитываю недавний контекст диалога.\n\n"
-                    "Задачи:\n"
-                    "/task <поручение> — подготовить проект задачи\n"
-                    "/tasks — показать актуальные задачи\n"
-                    "/tasks <filter> — отфильтровать задачи\n"
-                    "/find <текст> — найти задачу\n"
-                    "/task_info N — открыть карточку и историю задачи\n"
-                    "/complete N <результат> — завершить с фиксацией результата\n"
-                    "/summary — показать управленческую сводку\n\n"
-                    "Повторяющиеся задачи:\n"
-                    "/repeat <правило> — подготовить ежедневное или еженедельное правило\n"
-                    "/recurring — показать активные правила\n"
-                    "/disable_repeat N — отключить правило\n\n"
-                    "/confirm — подтвердить подготовленное действие\n"
-                    "/cancel — отменить подготовленное действие"
+                    "Bar Manager AI подключён.\n\n"
+                    "Бот собирает сообщения из разрешённых рабочих чатов и отправляет "
+                    "уведомления. Создание, разбор и управление задачами выполняются "
+                    "в приложении.\n\n"
+                    "Служебные команды владельца:\n"
+                    "/summary — краткая сводка\n"
+                    "/tasks — аварийный список активных задач"
                 ),
                 store=store,
                 reply_to_message_id=reply_to_message_id,
@@ -306,7 +386,7 @@ async def _handle_authorized_message(
         if store is not None and record_id is not None:
             await store.mark_completed(record_id)
     except Exception as exc:
-        logger.exception("Telegram update processing failed")
+        logger.exception("Telegram owner update processing failed")
         if store is not None and record_id is not None:
             try:
                 await store.mark_failed(record_id, type(exc).__name__)
