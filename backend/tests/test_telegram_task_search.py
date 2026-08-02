@@ -103,7 +103,7 @@ def test_search_matches_common_russian_word_forms() -> None:
 
     assert [number for number, _ in _search(indexed, "сиропы")] == [1]
     assert [number for number, _ in _search(indexed, "остатков")] == [1]
-    assert [number for number, _ in _search(indexed, "поставка") ] == [1]
+    assert [number for number, _ in _search(indexed, "поставка")] == [1]
     assert [number for number, _ in _search(indexed, "складской отчёт")] == [1]
 
 
@@ -137,5 +137,7 @@ def test_telegram_search_routing_contract() -> None:
     assert 'command == "/tasks" and bool(argument)' in commands
     assert "RUSSIAN_SUFFIXES" in commands
     assert "Номера совпадают с общим списком /tasks" in commands
-    assert "/tasks <filter>" in bot
-    assert "/find <текст>" in bot
+    assert "Служебные команды владельца" in bot
+    assert "/tasks — аварийный список активных задач" in bot
+    assert "/tasks <filter>" not in bot
+    assert "/find <текст>" not in bot
