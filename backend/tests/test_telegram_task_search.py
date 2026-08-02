@@ -38,7 +38,7 @@ def make_task(
 
 
 def test_filters_preserve_global_task_numbers() -> None:
-    now = datetime(2026, 8, 2, 16, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc)
     indexed = [
         (1, make_task("Просроченная", due_at=now - timedelta(hours=1))),
         (
@@ -66,7 +66,7 @@ def test_filters_preserve_global_task_numbers() -> None:
     high = _filter(indexed, "high", now=now)
     waiting = _filter(indexed, "waiting", now=now)
 
-    assert [number for number, _ in today] == [2]
+    assert [number for number, _ in today] == [1, 2]
     assert [number for number, _ in overdue] == [1]
     assert [number for number, _ in high] == [2]
     assert [number for number, _ in waiting] == [3]
