@@ -10,6 +10,7 @@ from .agent import run_agent
 from .config import Settings
 from .schemas import AgentChatRequest, AgentChatResponse
 from .telegram_store import TelegramConversationStore, get_telegram_store
+from .telegram_task_commands import maybe_handle_task_command
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_TEXT_LIMIT = 4096
@@ -179,12 +180,29 @@ async def _handle_authorized_message(
                 settings,
                 chat_id,
                 (
-                    "Bar Manager AI подключён. Отправьте задачу, вопрос или описание "
-                    "рабочей ситуации обычным текстом. Я учитываю недавний контекст диалога."
+                    "Bar Manager AI подключён. Я учитываю недавний контекст диалога.\n\n"
+                    "Команды задач:\n"
+                    "/task <поручение> — подготовить проект задачи\n"
+                    "/confirm — создать подготовленную задачу\n"
+                    "/cancel — отменить проект\n"
+                    "/tasks — показать актуальные задачи"
                 ),
                 store=store,
                 reply_to_message_id=reply_to_message_id,
             )
+            if store is not None and record_id is not None:
+                await store.mark_completed(record_id)
+            return
+
+        handled = await maybe_handle_task_command(
+            normalized,
+            chat_id=chat_id,
+            source_message_id=reply_to_message_id,
+            settings=settings,
+            send_text=send_telegram_text,
+            conversation_store=store,
+        )
+        if handled:
             if store is not None and record_id is not None:
                 await store.mark_completed(record_id)
             return
