@@ -14,6 +14,7 @@ from .recurring_store import (
 )
 from .schemas import TaskCreate, TaskOut, TaskUpdate
 from .task_drafts import extract_task_draft
+from .task_edits import extract_task_edit, task_update_from_edit
 from .task_store import TaskNotFoundError, get_task_store
 
 LOCAL_TIMEZONE = timezone(timedelta(hours=3), name="MSK")
@@ -29,7 +30,7 @@ CONFIRMED_STATUS_COMMANDS = {
 }
 ALL_TASK_COMMANDS = (
     TASK_COMMANDS
-    | {"/tasks", "/confirm", "/cancel"}
+    | {"/tasks", "/edit", "/confirm", "/cancel"}
     | set(DIRECT_STATUS_COMMANDS)
     | set(CONFIRMED_STATUS_COMMANDS)
 )
@@ -53,6 +54,7 @@ STATUS_LABELS = {
     "done": "Завершена",
     "cancelled": "Отменена",
 }
+EDITABLE_TASK_FIELDS = {"title", "description", "venue_code", "priority", "due_at"}
 
 
 def parse_command(text: str) -> tuple[str, str]:
@@ -70,12 +72,28 @@ def parse_task_number(argument: str) -> int | None:
     return number if number > 0 else None
 
 
+def parse_task_edit_argument(argument: str) -> tuple[int | None, str]:
+    parts = argument.strip().split(maxsplit=1)
+    if not parts:
+        return None, ""
+    number = parse_task_number(parts[0])
+    instruction = parts[1].strip() if len(parts) > 1 else ""
+    return number, instruction
+
+
 def active_tasks(tasks: list[TaskOut]) -> list[TaskOut]:
     return [task for task in tasks if task.status in ACTIVE_STATUSES]
 
 
 def select_task_by_number(tasks: list[TaskOut], argument: str) -> TaskOut | None:
     number = parse_task_number(argument)
+    current = active_tasks(tasks)
+    if number is None or number > len(current):
+        return None
+    return current[number - 1]
+
+
+def select_task_by_index(tasks: list[TaskOut], number: int | None) -> TaskOut | None:
     current = active_tasks(tasks)
     if number is None or number > len(current):
         return None
@@ -120,12 +138,64 @@ def format_task_list(tasks: list[TaskOut]) -> str:
         [
             "",
             "Управление по номеру:",
+            "/edit N <изменения> — изменить задачу после подтверждения",
             "/work N — взять в работу",
             "/wait N — перевести в ожидание",
             "/done N — завершить после подтверждения",
             "/cancel_task N — отменить после подтверждения",
         ]
     )
+    return "\n".join(lines)
+
+
+def format_task_edit_preview(task: TaskOut, update: TaskUpdate) -> str:
+    changes = update.model_dump(exclude_unset=True)
+    lines = ["Проект изменения задачи", f"Задача: {task.title}", ""]
+    if "title" in changes:
+        lines.append(f"Название: {_short(task.title)} → {_short(changes['title'])}")
+    if "description" in changes:
+        lines.append(
+            "Детали: "
+            f"{_short(task.description or 'не указаны')} → "
+            f"{_short(changes['description'] or 'не указаны')}"
+        )
+    if "venue_code" in changes:
+        lines.append(
+            "Заведение: "
+            f"{VENUE_LABELS.get(task.venue_code, 'Не указано')} → "
+            f"{VENUE_LABELS.get(changes['venue_code'], 'Не указано')}"
+        )
+    if "priority" in changes:
+        lines.append(
+            "Приоритет: "
+            f"{PRIORITY_LABELS.get(task.priority, task.priority)} → "
+            f"{PRIORITY_LABELS.get(changes['priority'], changes['priority'])}"
+        )
+    if "due_at" in changes:
+        lines.append(
+            f"Срок: {_format_datetime(task.due_at)} → "
+            f"{_format_datetime(changes['due_at'])}"
+        )
+    lines.extend(
+        [
+            "",
+            "Для применения отправьте /confirm.",
+            "Для отмены отправьте /cancel.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_task_edit_result(task: TaskOut, changed_fields: set[str]) -> str:
+    lines = ["Задача обновлена.", f"Задача: {task.title}"]
+    if "description" in changed_fields:
+        lines.append(f"Детали: {_short(task.description or 'не указаны')}")
+    if "venue_code" in changed_fields:
+        lines.append(f"Заведение: {VENUE_LABELS.get(task.venue_code, 'Не указано')}")
+    if "priority" in changed_fields:
+        lines.append(f"Приоритет: {PRIORITY_LABELS.get(task.priority, task.priority)}")
+    if "due_at" in changed_fields:
+        lines.append(f"Срок: {_format_datetime(task.due_at)}")
     return "\n".join(lines)
 
 
@@ -217,6 +287,40 @@ async def maybe_handle_task_command(
         await reply(format_task_list(tasks))
         return True
 
+    if command == "/edit":
+        number, instruction = parse_task_edit_argument(argument)
+        tasks = await task_store.list_tasks()
+        task = select_task_by_index(tasks, number)
+        if task is None or not instruction:
+            await reply(
+                "Сначала отправьте /tasks, затем укажите номер и изменение. Например:\n"
+                "/edit 1 перенеси срок на завтра 12:00 и сделай приоритет высоким"
+            )
+            return True
+        if pending_store is None:
+            await reply("Редактирование задач недоступно: база данных не подключена.")
+            return True
+
+        draft = await extract_task_edit(instruction, task, settings)
+        if draft.clarification_question:
+            await reply(
+                f"{draft.clarification_question}\n\n"
+                "После уточнения повторите полную команду /edit."
+            )
+            return True
+
+        update = task_update_from_edit(draft)
+        changes = update.model_dump(exclude_unset=True, mode="json")
+        await pending_store.save_task_edit(
+            chat_id,
+            task_id=task.id,
+            changes=changes,
+            title=task.title,
+            source_message_id=source_message_id,
+        )
+        await reply(format_task_edit_preview(task, update))
+        return True
+
     if command in DIRECT_STATUS_COMMANDS or command in CONFIRMED_STATUS_COMMANDS:
         tasks = await task_store.list_tasks()
         task = select_task_by_number(tasks, argument)
@@ -296,6 +400,26 @@ async def maybe_handle_task_command(
         await reply(format_status_result(task))
         return True
 
+    if pending.action_type == "update_task_fields":
+        try:
+            task_id = UUID(str(pending.payload.get("task_id")))
+            raw_changes = pending.payload.get("changes")
+            if not isinstance(raw_changes, dict) or not raw_changes:
+                raise ValueError("Task edit changes are missing")
+            if set(raw_changes) - EDITABLE_TASK_FIELDS:
+                raise ValueError("Task edit contains unsupported fields")
+            update = TaskUpdate.model_validate(raw_changes)
+            if not update.model_dump(exclude_unset=True):
+                raise ValueError("Task edit is empty")
+            task = await task_store.update_task(task_id, update)
+        except (TaskNotFoundError, TypeError, ValueError):
+            await pending_store.resolve(pending.id, "cancelled")
+            await reply("Не удалось применить изменение: задача больше не доступна.")
+            return True
+        await pending_store.resolve(pending.id, "confirmed")
+        await reply(format_task_edit_result(task, set(raw_changes)))
+        return True
+
     if pending.action_type == "create_recurring_rule":
         if recurring_store is None:
             await pending_store.resolve(pending.id, "cancelled")
@@ -367,3 +491,10 @@ def _format_datetime(value: datetime | None) -> str:
     else:
         localized = localized.astimezone(LOCAL_TIMEZONE)
     return localized.strftime("%d.%m.%Y %H:%M")
+
+
+def _short(value: object, limit: int = 180) -> str:
+    text = str(value).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
