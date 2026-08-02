@@ -2,6 +2,7 @@ name: bar-manager-ai
 
 services:
   api:
+    image: bar-manager-ai-api:latest
     build:
       context: ../../backend
       dockerfile: Dockerfile
@@ -39,6 +40,24 @@ services:
       timeout: 8s
       retries: 5
       start_period: 30s
+    networks:
+      - app
+
+  reminder:
+    image: bar-manager-ai-api:latest
+    container_name: bar-manager-ai-reminder
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: ${DATABASE_URL}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      OWNER_TELEGRAM_ID: ${OWNER_TELEGRAM_ID:-}
+    command:
+      - python
+      - -m
+      - app.reminder_worker
     networks:
       - app
 
