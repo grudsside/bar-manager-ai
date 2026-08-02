@@ -68,6 +68,28 @@ class TelegramPendingActionStore:
             source_message_id=source_message_id,
         )
 
+    async def save_task_edit(
+        self,
+        chat_id: int,
+        *,
+        task_id: UUID,
+        changes: dict[str, Any],
+        title: str,
+        source_message_id: int | None,
+    ) -> UUID:
+        if not changes:
+            raise ValueError("Task edit requires at least one change")
+        return await self._save_action(
+            chat_id,
+            "update_task_fields",
+            {
+                "task_id": str(task_id),
+                "title": title,
+                "changes": changes,
+            },
+            source_message_id=source_message_id,
+        )
+
     async def save_recurring_rule(
         self,
         chat_id: int,
