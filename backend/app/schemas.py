@@ -13,6 +13,7 @@ VenueCode = Literal["oxford", "sovremennik"]
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     service: str
+    version: str
     environment: str
     openai_configured: bool
     telegram_configured: bool

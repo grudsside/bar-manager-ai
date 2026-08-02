@@ -77,6 +77,7 @@ def task_store(current: Settings = Depends(get_settings)) -> TaskStore:
 async def health(current: Settings = Depends(get_settings)) -> HealthResponse:
     return HealthResponse(
         service=current.app_name,
+        version=current.app_version,
         environment=current.environment,
         openai_configured=bool(current.openai_api_key),
         telegram_configured=bool(current.telegram_bot_token and current.telegram_webhook_secret),

@@ -5,6 +5,7 @@ REPO_DIR="${REPO_DIR:-/opt/bar-manager-ai}"
 ENV_FILE="${ENV_FILE:-$REPO_DIR/deploy/firstvds/.env}"
 COMPOSE_FILE="$REPO_DIR/deploy/firstvds/docker-compose.yml"
 MIGRATION_LOG="/tmp/bar-manager-migration.log"
+HEALTH_FILE="/tmp/bar-manager-health.json"
 
 cd "$REPO_DIR"
 
@@ -22,13 +23,15 @@ git fetch origin main
 git checkout main
 git reset --hard origin/main
 
+RELEASE_VERSION="$(git rev-parse --short=12 HEAD)"
+export APP_VERSION="$RELEASE_VERSION"
+echo "Preparing release ${RELEASE_VERSION}"
+
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 
 # Build and migrate without stopping the running public stack. The current API
 # and Caddy remain available until every migration has completed successfully.
 # A failed migration therefore leaves the last healthy release online.
-
-# Remove abandoned one-off migration containers from interrupted deployments.
 mapfile -t stale_migration_containers < <(
   docker ps -aq --filter "name=bar-manager-ai-api-run-"
 )
@@ -36,12 +39,11 @@ if (( ${#stale_migration_containers[@]} > 0 )); then
   docker rm -f "${stale_migration_containers[@]}" >/dev/null 2>&1 || true
 fi
 
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build api
+# A clean build plus a commit-specific APP_VERSION prevents Docker from silently
+# reusing an older API image after a source update.
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+  build --pull --no-cache api
 
-# Run migrations as a separate one-off job. Supabase Session Pooler can finish
-# the SQL successfully but time out while asyncpg closes the connection. Accept
-# only a timeout after every discovered migration has been confirmed complete;
-# all SQL, connection and partial-migration failures remain fatal.
 echo "Running database migrations..."
 rm -f "$MIGRATION_LOG"
 set +e
@@ -68,8 +70,33 @@ if (( migration_status != 0 )); then
   fi
 fi
 
-# Replace the public containers only after migrations have completed successfully.
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans
+# Replace the API only after migrations have completed. Caddy stays online and
+# reconnects to the new healthy container.
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+  up -d --force-recreate --no-deps api
+
+for attempt in {1..40}; do
+  container_status="$(
+    docker inspect \
+      --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+      bar-manager-ai-api 2>/dev/null || true
+  )"
+  if [[ "$container_status" == "healthy" ]]; then
+    break
+  fi
+  if (( attempt == 40 )); then
+    echo "API container did not become healthy." >&2
+    docker logs --tail=200 bar-manager-ai-api >&2
+    exit 1
+  fi
+  sleep 3
+done
+
+container_version="$(docker exec bar-manager-ai-api printenv APP_VERSION)"
+if [[ "$container_version" != "$RELEASE_VERSION" ]]; then
+  echo "Wrong API image is running: expected ${RELEASE_VERSION}, got ${container_version}." >&2
+  exit 1
+fi
 
 docker image prune -f >/dev/null
 
@@ -80,15 +107,28 @@ if [[ -z "$API_DOMAIN" ]]; then
 fi
 
 for attempt in {1..36}; do
-  if curl --fail --silent --show-error "https://${API_DOMAIN}/health" >/tmp/bar-manager-health.json; then
-    cat /tmp/bar-manager-health.json
-    echo
-    echo "Deployment is healthy: https://${API_DOMAIN}/health"
-    exit 0
+  if curl --fail --silent --show-error "https://${API_DOMAIN}/health" >"$HEALTH_FILE"; then
+    if python3 - "$HEALTH_FILE" "$RELEASE_VERSION" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+health_path = Path(sys.argv[1])
+expected = sys.argv[2]
+data = json.loads(health_path.read_text(encoding="utf-8"))
+actual = data.get("version")
+if actual != expected:
+    raise SystemExit(f"Health version mismatch: expected {expected}, got {actual}")
+print(json.dumps(data, ensure_ascii=False, indent=2))
+PY
+    then
+      echo "Deployment is healthy and verified: release ${RELEASE_VERSION}"
+      exit 0
+    fi
   fi
   sleep 5
 done
 
-echo "Deployment did not become healthy. Recent logs:" >&2
+echo "Deployment did not expose the expected release. Recent logs:" >&2
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=200 >&2
 exit 1
