@@ -6,6 +6,8 @@ from typing import Any
 from .config import Settings
 from .pending_action_store import get_pending_action_store
 from .recurring_rules import (
+    LOCAL_TIMEZONE,
+    ExtractedRecurringRule,
     extract_recurring_rule,
     first_due_at,
     format_recurrence,
@@ -124,14 +126,19 @@ async def maybe_handle_recurring_command(
     return True
 
 
-def _format_rule_preview(draft: Any, next_due: datetime) -> str:
+def _format_rule_preview(
+    draft: ExtractedRecurringRule,
+    next_due: datetime,
+) -> str:
+    if draft.due_time is None:
+        raise ValueError("Recurring rule due_time is required")
     return (
         "Проект повторяющейся задачи\n"
         f"Задача: {draft.title}\n"
         f"Заведение: {VENUE_LABELS.get(draft.venue_code, 'Не указано')}\n"
         f"Приоритет: {PRIORITY_LABELS.get(draft.priority, draft.priority)}\n"
         f"Расписание: {format_recurrence(draft.frequency, draft.weekdays, draft.due_time)}\n"
-        f"Ближайший срок: {next_due.astimezone().strftime('%d.%m.%Y %H:%M %Z')}\n\n"
+        f"Ближайший срок: {_format_datetime(next_due)}\n\n"
         "Для создания правила отправьте /confirm.\n"
         "Для отмены отправьте /cancel."
     )
@@ -146,7 +153,7 @@ def _format_rule_list(rules: list[RecurringRuleOut]) -> str:
         venue = VENUE_LABELS.get(rule.venue_code, "Не указано")
         schedule = format_recurrence(rule.frequency, rule.weekdays, rule.due_time)
         next_due = (
-            rule.next_due_at.astimezone().strftime("%d.%m.%Y %H:%M %Z")
+            _format_datetime(rule.next_due_at)
             if rule.next_due_at is not None
             else "не определён"
         )
@@ -177,3 +184,10 @@ def _select_rule(
     if number < 1 or number > len(rules):
         return None
     return rules[number - 1]
+
+
+def _format_datetime(value: datetime) -> str:
+    localized = value
+    if localized.tzinfo is None:
+        localized = localized.replace(tzinfo=timezone.utc)
+    return localized.astimezone(LOCAL_TIMEZONE).strftime("%d.%m.%Y %H:%M")
