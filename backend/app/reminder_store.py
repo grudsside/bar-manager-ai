@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -13,12 +14,13 @@ TASK_REMINDER_TYPES = (
     "task_due_2h",
     "task_overdue",
 )
+DAILY_SUMMARY_TYPE = "daily_task_summary"
 
 
 @dataclass(frozen=True)
 class ClaimedReminder:
     id: UUID
-    task_id: UUID
+    task_id: UUID | None
     title: str
     body: str
     severity: str
@@ -62,6 +64,36 @@ class TaskReminderStore:
             spec.severity,
             spec.scheduled_for,
             spec.dedupe_key,
+        )
+
+    async def ensure_daily_summary(
+        self,
+        *,
+        dedupe_key: str,
+        scheduled_for: datetime,
+        body: str,
+    ) -> None:
+        pool = await self._get_pool()
+        await pool.execute(
+            """
+            insert into notification_events (
+                task_id,
+                notification_type,
+                title,
+                body,
+                severity,
+                scheduled_for,
+                dedupe_key
+            ) values (null, $1, 'Утренняя сводка', $2, 'normal', $3, $4)
+            on conflict (dedupe_key) do update
+            set body = excluded.body,
+                scheduled_for = excluded.scheduled_for
+            where notification_events.sent_at is null
+            """,
+            DAILY_SUMMARY_TYPE,
+            body,
+            scheduled_for,
+            dedupe_key,
         )
 
     async def claim_next(self) -> ClaimedReminder | None:
@@ -109,6 +141,49 @@ class TaskReminderStore:
             returning event.id, event.task_id, event.title, event.body, event.severity
             """,
             list(TASK_REMINDER_TYPES),
+        )
+        if row is None:
+            return None
+        return ClaimedReminder(**dict(row))
+
+    async def claim_daily_summary(self, dedupe_key: str) -> ClaimedReminder | None:
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            """
+            with candidate as (
+                select event.id
+                from notification_events as event
+                where event.sent_at is null
+                  and event.task_id is null
+                  and event.notification_type = $1
+                  and event.dedupe_key = $2
+                  and event.scheduled_for <= now()
+                  and (
+                    nullif(event.delivery_results ->> 'next_attempt_at', '') is null
+                    or nullif(
+                        event.delivery_results ->> 'next_attempt_at', ''
+                    )::timestamptz <= now()
+                  )
+                  and (
+                    event.delivery_results ->> 'status' is distinct from 'sending'
+                    or nullif(
+                        event.delivery_results ->> 'claimed_at', ''
+                    )::timestamptz < now() - interval '10 minutes'
+                  )
+                for update of event skip locked
+                limit 1
+            )
+            update notification_events as event
+            set delivery_results = jsonb_build_object(
+                'status', 'sending',
+                'claimed_at', now()
+            )
+            from candidate
+            where event.id = candidate.id
+            returning event.id, event.task_id, event.title, event.body, event.severity
+            """,
+            DAILY_SUMMARY_TYPE,
+            dedupe_key,
         )
         if row is None:
             return None
