@@ -20,7 +20,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE="https://grudsside.github.io/bar-manager-ai"
-          for path in "/" "/manifest.webmanifest" "/service-worker.js" "/release.json"; do
+          for path in "/" "/manifest.webmanifest" "/service-worker.js" "/api-client.js" "/inbox-ui.js" "/inbox.css" "/release.json"; do
             echo "Checking ${BASE}${path}"
             for attempt in {1..12}; do
               if curl --fail --silent --show-error --location --max-time 20 "${BASE}${path}" > /dev/null; then
