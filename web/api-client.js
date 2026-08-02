@@ -258,5 +258,11 @@ export async function initApiClient() {
     await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
   }
   mountSettings(client);
+  try {
+    const inboxModule = await import('./inbox-ui.js');
+    await inboxModule.initInboxUI(client);
+  } catch (error) {
+    console.error('Inbox UI initialization failed', error);
+  }
   return client;
 }
