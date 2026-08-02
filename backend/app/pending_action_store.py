@@ -68,6 +68,38 @@ class TelegramPendingActionStore:
             source_message_id=source_message_id,
         )
 
+    async def save_recurring_rule(
+        self,
+        chat_id: int,
+        payload: dict[str, Any],
+        *,
+        source_message_id: int | None,
+    ) -> UUID:
+        return await self._save_action(
+            chat_id,
+            "create_recurring_rule",
+            payload,
+            source_message_id=source_message_id,
+        )
+
+    async def save_disable_recurring_rule(
+        self,
+        chat_id: int,
+        *,
+        rule_id: UUID,
+        title: str,
+        source_message_id: int | None,
+    ) -> UUID:
+        return await self._save_action(
+            chat_id,
+            "disable_recurring_rule",
+            {
+                "rule_id": str(rule_id),
+                "title": title,
+            },
+            source_message_id=source_message_id,
+        )
+
     async def _save_action(
         self,
         chat_id: int,
