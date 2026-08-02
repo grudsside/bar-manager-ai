@@ -107,10 +107,10 @@ for attempt in {1..20}; do
   sleep 3
 done
 
-api_version="$(docker exec bar-manager-ai-api printenv APP_VERSION)"
+container_version="$(docker exec bar-manager-ai-api printenv APP_VERSION)"
 reminder_version="$(docker exec bar-manager-ai-reminder printenv APP_VERSION)"
-if [[ "$api_version" != "$RELEASE_VERSION" ]]; then
-  echo "Wrong API image is running: expected ${RELEASE_VERSION}, got ${api_version}." >&2
+if [[ "$container_version" != "$RELEASE_VERSION" ]]; then
+  echo "Wrong API image is running: expected ${RELEASE_VERSION}, got ${container_version}." >&2
   exit 1
 fi
 if [[ "$reminder_version" != "$RELEASE_VERSION" ]]; then
