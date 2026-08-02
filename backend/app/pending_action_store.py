@@ -54,17 +54,28 @@ class TelegramPendingActionStore:
         status: str,
         title: str,
         source_message_id: int | None,
+        result: str | None = None,
     ) -> UUID:
         if status not in {"done", "cancelled"}:
             raise ValueError("Unsupported confirmed task status")
+        payload: dict[str, Any] = {
+            "task_id": str(task_id),
+            "status": status,
+            "title": title,
+        }
+        if result is not None:
+            if status != "done":
+                raise ValueError("Completion result is only supported for done tasks")
+            normalized = " ".join(result.strip().split())
+            if not normalized:
+                raise ValueError("Completion result cannot be empty")
+            if len(normalized) > 2_000:
+                raise ValueError("Completion result is too long")
+            payload["result"] = normalized
         return await self._save_action(
             chat_id,
             "update_task_status",
-            {
-                "task_id": str(task_id),
-                "status": status,
-                "title": title,
-            },
+            payload,
             source_message_id=source_message_id,
         )
 
