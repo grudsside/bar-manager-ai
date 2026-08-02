@@ -43,6 +43,16 @@ class TaskStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def add_task_note(
+        self,
+        task_id: UUID,
+        text: str,
+        *,
+        actor_type: str = "owner",
+    ) -> TaskEventOut:
+        raise NotImplementedError
+
+    @abstractmethod
     async def list_task_events(
         self,
         task_id: UUID,
@@ -124,6 +134,25 @@ class InMemoryTaskStore(TaskStore):
             )
         )
         return updated
+
+    async def add_task_note(
+        self,
+        task_id: UUID,
+        text: str,
+        *,
+        actor_type: str = "owner",
+    ) -> TaskEventOut:
+        await self.get_task(task_id)
+        normalized = _normalize_note(text)
+        event = TaskEventOut(
+            id=uuid4(),
+            event_type="note_added",
+            actor_type=actor_type,
+            payload={"text": normalized},
+            created_at=datetime.now(timezone.utc),
+        )
+        self._events.setdefault(task_id, []).append(event)
+        return event
 
     async def list_task_events(
         self,
@@ -256,6 +285,28 @@ class PostgresTaskStore(TaskStore):
                 )
         return await self.get_task(task_id)
 
+    async def add_task_note(
+        self,
+        task_id: UUID,
+        text: str,
+        *,
+        actor_type: str = "owner",
+    ) -> TaskEventOut:
+        await self.get_task(task_id)
+        normalized = _normalize_note(text)
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            """
+            insert into task_events (task_id, event_type, actor_type, payload)
+            values ($1, 'note_added', $2, jsonb_build_object('text', $3::text))
+            returning id, event_type, actor_type, payload, created_at
+            """,
+            task_id,
+            actor_type,
+            normalized,
+        )
+        return _task_event_from_record(row)
+
     async def list_task_events(
         self,
         task_id: UUID,
@@ -315,6 +366,15 @@ def _task_event_from_record(row: asyncpg.Record) -> TaskEventOut:
         payload = {}
     values["payload"] = payload
     return TaskEventOut(**values)
+
+
+def _normalize_note(text: str) -> str:
+    normalized = " ".join(text.strip().split())
+    if not normalized:
+        raise ValueError("Task note cannot be empty")
+    if len(normalized) > 2_000:
+        raise ValueError("Task note is too long")
+    return normalized
 
 
 async def _resolve_venue_id(pool: asyncpg.Pool, venue_code: str | None) -> UUID | None:
