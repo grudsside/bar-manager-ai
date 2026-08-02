@@ -14,6 +14,7 @@ from .telegram_store import TelegramConversationStore, get_telegram_store
 from .telegram_summary_commands import maybe_handle_summary_command
 from .telegram_task_commands import maybe_handle_task_command
 from .telegram_task_history_commands import maybe_handle_task_history_command
+from .telegram_task_search_commands import maybe_handle_task_search_command
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_TEXT_LIMIT = 4096
@@ -184,6 +185,8 @@ async def _handle_authorized_message(
                     "Задачи:\n"
                     "/task <поручение> — подготовить проект задачи\n"
                     "/tasks — показать актуальные задачи\n"
+                    "/tasks <filter> — отфильтровать задачи\n"
+                    "/find <текст> — найти задачу\n"
                     "/task_info N — открыть карточку и историю задачи\n"
                     "/summary — показать управленческую сводку\n\n"
                     "Повторяющиеся задачи:\n"
@@ -227,6 +230,19 @@ async def _handle_authorized_message(
             return
 
         handled = await maybe_handle_task_history_command(
+            normalized,
+            chat_id=chat_id,
+            source_message_id=reply_to_message_id,
+            settings=settings,
+            send_text=send_telegram_text,
+            conversation_store=store,
+        )
+        if handled:
+            if store is not None and record_id is not None:
+                await store.mark_completed(record_id)
+            return
+
+        handled = await maybe_handle_task_search_command(
             normalized,
             chat_id=chat_id,
             source_message_id=reply_to_message_id,
