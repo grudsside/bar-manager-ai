@@ -16,7 +16,9 @@ from .recurring_rules import (
 from .schemas import TaskPriority, VenueCode
 
 GENERATION_HORIZON = timedelta(hours=24)
-MAX_OCCURRENCES_PER_RULE = 32
+STALE_OCCURRENCE_LIMIT = timedelta(hours=24)
+MAX_ADVANCES_PER_RULE = 1000
+MAX_GENERATED_OCCURRENCES_PER_RULE = 32
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,7 @@ class RecurringRuleStore:
         pool = await self._get_pool()
         aware_now = _as_aware(now)
         horizon = aware_now + GENERATION_HORIZON
+        cutoff = aware_now - STALE_OCCURRENCE_LIMIT
         generated = 0
 
         async with pool.acquire() as connection:
@@ -148,6 +151,7 @@ class RecurringRuleStore:
                         rule.venue_id,
                         rule.title,
                         rule.description,
+                        rule.original_text,
                         rule.priority,
                         rule.frequency,
                         rule.weekdays,
@@ -164,11 +168,27 @@ class RecurringRuleStore:
                 )
 
                 for row in rows:
+                    frequency = row["frequency"]
+                    weekdays = list(row["weekdays"] or [])
+                    due_time = row["default_due_time"]
                     current_due = _as_aware(row["next_due_at"])
+
+                    advances = 0
+                    while current_due < cutoff:
+                        advances += 1
+                        if advances > MAX_ADVANCES_PER_RULE:
+                            raise RuntimeError("Recurring rule could not catch up safely")
+                        current_due = next_due_at(
+                            current_due,
+                            frequency=frequency,
+                            weekdays=weekdays,
+                            due_time=due_time,
+                        )
+
                     occurrences = 0
                     while current_due <= horizon:
                         occurrences += 1
-                        if occurrences > MAX_OCCURRENCES_PER_RULE:
+                        if occurrences > MAX_GENERATED_OCCURRENCES_PER_RULE:
                             raise RuntimeError("Recurring rule generated too many occurrences")
 
                         source_reference = (
@@ -195,7 +215,7 @@ class RecurringRuleStore:
                             row["venue_id"],
                             row["title"],
                             row["description"],
-                            f"Автоматически создано правилом {row['id']}",
+                            row["original_text"],
                             row["priority"],
                             current_due,
                             source_reference,
@@ -223,9 +243,9 @@ class RecurringRuleStore:
 
                         current_due = next_due_at(
                             current_due,
-                            frequency=row["frequency"],
-                            weekdays=list(row["weekdays"] or []),
-                            due_time=row["default_due_time"],
+                            frequency=frequency,
+                            weekdays=weekdays,
+                            due_time=due_time,
                         )
 
                     await connection.execute(
