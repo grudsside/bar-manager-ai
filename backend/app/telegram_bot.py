@@ -9,6 +9,7 @@ import httpx
 from .agent import run_agent
 from .config import Settings
 from .schemas import AgentChatRequest, AgentChatResponse
+from .telegram_recurring_commands import maybe_handle_recurring_command
 from .telegram_store import TelegramConversationStore, get_telegram_store
 from .telegram_summary_commands import maybe_handle_summary_command
 from .telegram_task_commands import maybe_handle_task_command
@@ -74,8 +75,6 @@ async def telegram_api_call(
             response.raise_for_status()
             body = response.json()
     except (httpx.HTTPError, ValueError):
-        # httpx exceptions can include the request URL, which contains the bot token.
-        # Replace them with a token-free error before anything reaches application logs.
         raise RuntimeError(f"Telegram API {method} request failed") from None
 
     if not body.get("ok"):
@@ -125,7 +124,6 @@ async def send_typing_action(settings: Settings, chat_id: int) -> None:
 
 
 async def handle_telegram_update(update: dict[str, Any], settings: Settings) -> None:
-    """Process one Telegram update after the webhook has already returned HTTP 200."""
     message = update.get("message")
     if not isinstance(message, dict):
         return
@@ -182,12 +180,16 @@ async def _handle_authorized_message(
                 chat_id,
                 (
                     "Bar Manager AI подключён. Я учитываю недавний контекст диалога.\n\n"
-                    "Команды задач:\n"
+                    "Задачи:\n"
                     "/task <поручение> — подготовить проект задачи\n"
-                    "/confirm — создать подготовленную задачу\n"
-                    "/cancel — отменить проект или действие\n"
                     "/tasks — показать актуальные задачи\n"
-                    "/summary — показать управленческую сводку"
+                    "/summary — показать управленческую сводку\n\n"
+                    "Повторяющиеся задачи:\n"
+                    "/repeat <правило> — подготовить ежедневное или еженедельное правило\n"
+                    "/recurring — показать активные правила\n"
+                    "/disable_repeat N — отключить правило\n\n"
+                    "/confirm — подтвердить подготовленное действие\n"
+                    "/cancel — отменить подготовленное действие"
                 ),
                 store=store,
                 reply_to_message_id=reply_to_message_id,
@@ -197,6 +199,19 @@ async def _handle_authorized_message(
             return
 
         handled = await maybe_handle_summary_command(
+            normalized,
+            chat_id=chat_id,
+            source_message_id=reply_to_message_id,
+            settings=settings,
+            send_text=send_telegram_text,
+            conversation_store=store,
+        )
+        if handled:
+            if store is not None and record_id is not None:
+                await store.mark_completed(record_id)
+            return
+
+        handled = await maybe_handle_recurring_command(
             normalized,
             chat_id=chat_id,
             source_message_id=reply_to_message_id,
