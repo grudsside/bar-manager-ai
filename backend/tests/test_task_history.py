@@ -29,9 +29,16 @@ def make_task() -> TaskOut:
     )
 
 
-def test_task_card_contains_fields_and_readable_history() -> None:
+def test_task_card_contains_fields_notes_and_readable_history() -> None:
     task = make_task()
     events = [
+        TaskEventOut(
+            id=uuid4(),
+            event_type="note_added",
+            actor_type="telegram",
+            payload={"text": "Поставщик подтвердил доставку к 15:00"},
+            created_at=datetime(2026, 8, 2, 12, 45, tzinfo=timezone.utc),
+        ),
         TaskEventOut(
             id=uuid4(),
             event_type="updated",
@@ -60,10 +67,11 @@ def test_task_card_contains_fields_and_readable_history() -> None:
     assert "Источник: Telegram" in rendered
     assert "статус → В работе" in rendered
     assert "приоритет → Высокий" in rendered
+    assert "заметка: Поставщик подтвердил доставку к 15:00 · Telegram" in rendered
     assert "создана · Владелец" in rendered
 
 
-def test_in_memory_store_records_create_and_update_events() -> None:
+def test_in_memory_store_records_create_update_and_note_events() -> None:
     async def scenario() -> None:
         store = InMemoryTaskStore()
         task = await store.create_task(
@@ -74,11 +82,38 @@ def test_in_memory_store_records_create_and_update_events() -> None:
             )
         )
         await store.update_task(task.id, TaskUpdate(status="work", priority="high"))
+        note = await store.add_task_note(
+            task.id,
+            "  Поставщик   подтвердил доставку  ",
+            actor_type="telegram",
+        )
 
         events = await store.list_task_events(task.id)
 
-        assert [event.event_type for event in events] == ["updated", "created"]
-        assert events[0].payload == {"status": "work", "priority": "high"}
+        assert [event.event_type for event in events] == [
+            "note_added",
+            "updated",
+            "created",
+        ]
+        assert note.payload == {"text": "Поставщик подтвердил доставку"}
+        assert note.actor_type == "telegram"
+        assert events[1].payload == {"status": "work", "priority": "high"}
+
+    asyncio.run(scenario())
+
+
+def test_empty_and_oversized_notes_are_rejected() -> None:
+    async def scenario() -> None:
+        store = InMemoryTaskStore()
+        task = await store.create_task(TaskCreate(title="Проверка"))
+
+        for invalid in ("   ", "x" * 2_001):
+            try:
+                await store.add_task_note(task.id, invalid)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Invalid note was accepted")
 
     asyncio.run(scenario())
 
@@ -99,5 +134,7 @@ def test_telegram_history_routing_contract() -> None:
         "maybe_handle_task_command("
     )
     assert 'TASK_INFO_COMMANDS = {"/task_info", "/info"}' in command
-    assert "list_task_events" in store
+    assert 'TASK_NOTE_COMMANDS = {"/note"}' in command
+    assert "add_task_note" in store
+    assert "note_added" in store
     assert "/task_info N" in bot
