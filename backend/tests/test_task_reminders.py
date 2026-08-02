@@ -98,4 +98,8 @@ def test_reminder_worker_deployment_contract() -> None:
     assert "api reminder" in deploy
     assert "reminder_version" in deploy
     assert "on conflict (dedupe_key) do nothing" in store
-    assert "for update skip locked" in store
+    assert "for update of event skip locked" in store
+    assert "task.status in ('new', 'planned', 'work', 'waiting')" in store
+    assert "event.dedupe_key =" in store
+    assert "next_attempt_at" in store
+    assert "interval '5 minutes'" in store
