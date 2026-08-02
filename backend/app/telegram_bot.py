@@ -10,6 +10,7 @@ from .agent import run_agent
 from .config import Settings
 from .schemas import AgentChatRequest, AgentChatResponse
 from .telegram_store import TelegramConversationStore, get_telegram_store
+from .telegram_summary_commands import maybe_handle_summary_command
 from .telegram_task_commands import maybe_handle_task_command
 
 TELEGRAM_API_BASE_URL = "https://api.telegram.org"
@@ -184,12 +185,26 @@ async def _handle_authorized_message(
                     "Команды задач:\n"
                     "/task <поручение> — подготовить проект задачи\n"
                     "/confirm — создать подготовленную задачу\n"
-                    "/cancel — отменить проект\n"
-                    "/tasks — показать актуальные задачи"
+                    "/cancel — отменить проект или действие\n"
+                    "/tasks — показать актуальные задачи\n"
+                    "/summary — показать управленческую сводку"
                 ),
                 store=store,
                 reply_to_message_id=reply_to_message_id,
             )
+            if store is not None and record_id is not None:
+                await store.mark_completed(record_id)
+            return
+
+        handled = await maybe_handle_summary_command(
+            normalized,
+            chat_id=chat_id,
+            source_message_id=reply_to_message_id,
+            settings=settings,
+            send_text=send_telegram_text,
+            conversation_store=store,
+        )
+        if handled:
             if store is not None and record_id is not None:
                 await store.mark_completed(record_id)
             return
