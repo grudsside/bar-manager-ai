@@ -9,8 +9,9 @@ import asyncpg
 
 
 @dataclass(frozen=True)
-class PendingTaskAction:
+class PendingTelegramAction:
     id: UUID
+    action_type: str
     payload: dict[str, Any]
     source_message_id: int | None
 
@@ -38,6 +39,43 @@ class TelegramPendingActionStore:
         *,
         source_message_id: int | None,
     ) -> UUID:
+        return await self._save_action(
+            chat_id,
+            "create_task",
+            payload,
+            source_message_id=source_message_id,
+        )
+
+    async def save_status_change(
+        self,
+        chat_id: int,
+        *,
+        task_id: UUID,
+        status: str,
+        title: str,
+        source_message_id: int | None,
+    ) -> UUID:
+        if status not in {"done", "cancelled"}:
+            raise ValueError("Unsupported confirmed task status")
+        return await self._save_action(
+            chat_id,
+            "update_task_status",
+            {
+                "task_id": str(task_id),
+                "status": status,
+                "title": title,
+            },
+            source_message_id=source_message_id,
+        )
+
+    async def _save_action(
+        self,
+        chat_id: int,
+        action_type: str,
+        payload: dict[str, Any],
+        *,
+        source_message_id: int | None,
+    ) -> UUID:
         pool = await self._get_pool()
         async with pool.acquire() as connection:
             async with connection.transaction():
@@ -46,7 +84,6 @@ class TelegramPendingActionStore:
                     update telegram_pending_actions
                     set status = 'cancelled', resolved_at = now()
                     where chat_id = $1
-                      and action_type = 'create_task'
                       and status = 'pending'
                     """,
                     chat_id,
@@ -55,23 +92,23 @@ class TelegramPendingActionStore:
                     """
                     insert into telegram_pending_actions (
                         chat_id, action_type, payload, source_message_id
-                    ) values ($1, 'create_task', $2::jsonb, $3)
+                    ) values ($1, $2, $3::jsonb, $4)
                     returning id
                     """,
                     chat_id,
+                    action_type,
                     json.dumps(payload, ensure_ascii=False),
                     source_message_id,
                 )
         return row["id"]
 
-    async def get_pending_task(self, chat_id: int) -> PendingTaskAction | None:
+    async def get_pending_action(self, chat_id: int) -> PendingTelegramAction | None:
         pool = await self._get_pool()
         row = await pool.fetchrow(
             """
-            select id, payload, source_message_id
+            select id, action_type, payload, source_message_id
             from telegram_pending_actions
             where chat_id = $1
-              and action_type = 'create_task'
               and status = 'pending'
               and expires_at > now()
             order by created_at desc
@@ -85,12 +122,19 @@ class TelegramPendingActionStore:
         if isinstance(payload, str):
             payload = json.loads(payload)
         if not isinstance(payload, dict):
-            raise RuntimeError("Invalid pending task payload")
-        return PendingTaskAction(
+            raise RuntimeError("Invalid pending Telegram action payload")
+        return PendingTelegramAction(
             id=row["id"],
+            action_type=row["action_type"],
             payload=payload,
             source_message_id=row["source_message_id"],
         )
+
+    async def get_pending_task(self, chat_id: int) -> PendingTelegramAction | None:
+        pending = await self.get_pending_action(chat_id)
+        if pending is None or pending.action_type != "create_task":
+            return None
+        return pending
 
     async def resolve(self, action_id: UUID, status: str) -> None:
         if status not in {"confirmed", "cancelled", "expired"}:
