@@ -198,13 +198,7 @@ async def _handle_authorized_message(
         result = await run_agent(
             AgentChatRequest(
                 message=normalized,
-                context={
-                    "source": "telegram",
-                    "telegram_chat_id": chat_id,
-                    "telegram_message_id": message.get("message_id"),
-                    "telegram_update_id": update.get("update_id"),
-                    "recent_conversation": recent_history,
-                },
+                context={"recent_conversation": recent_history},
             ),
             settings,
         )
