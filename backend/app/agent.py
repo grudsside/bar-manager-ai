@@ -31,7 +31,21 @@ SYSTEM_INSTRUCTIONS = """
 формат переданного контекста. Отвечай так, будто видишь обычную переписку.
 
 Ты не должен самостоятельно отправлять сообщения, удалять данные, менять сроки или
-закрывать важные задачи. Для таких действий всегда уn        "name": "Бар-менеджер AI",
+закрывать важные задачи. Для таких действий всегда указывай, что требуется подтверждение владельца.
+Отвечай на русском языке, структурировано и без лишней теории.
+""".strip()
+
+_INTERNAL_CONTEXT_KEYS = {
+    "source",
+    "telegram_chat_id",
+    "telegram_message_id",
+    "telegram_update_id",
+}
+
+
+def build_agent(settings: Settings) -> Agent:
+    kwargs: dict[str, object] = {
+        "name": "Бар-менеджер AI",
         "instructions": SYSTEM_INSTRUCTIONS,
     }
     if settings.openai_model:
@@ -94,7 +108,9 @@ def build_agent_input(request: AgentChatRequest) -> str:
     if request.task_id:
         sections.append(f"Активная задача приложения: {request.task_id}")
 
-    sections.append("Ответь только на текущее сообщение пользователя, учитывая недавний диалог.")
+    sections.append(
+        "Ответь только на текущее сообщение пользователя, учитывая недавний диалог."
+    )
     return "\n\n".join(sections)
 
 
