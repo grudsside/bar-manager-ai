@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -71,19 +69,34 @@ class TaskReminderStore:
         row = await pool.fetchrow(
             """
             with candidate as (
-                select id
-                from notification_events
-                where sent_at is null
-                  and task_id is not null
-                  and notification_type = any($1::text[])
-                  and scheduled_for <= now()
-                  and (
-                    delivery_results ->> 'status' is distinct from 'sending'
-                    or nullif(delivery_results ->> 'claimed_at', '')::timestamptz
-                        < now() - interval '10 minutes'
+                select event.id
+                from notification_events as event
+                join tasks as task on task.id = event.task_id
+                where event.sent_at is null
+                  and event.task_id is not null
+                  and event.notification_type = any($1::text[])
+                  and event.scheduled_for <= now()
+                  and task.status in ('new', 'planned', 'work', 'waiting')
+                  and task.due_at is not null
+                  and event.dedupe_key = (
+                    'task:' || task.id::text || ':due:' ||
+                    floor(extract(epoch from task.due_at))::bigint::text || ':' ||
+                    event.notification_type
                   )
-                order by scheduled_for, created_at
-                for update skip locked
+                  and (
+                    nullif(event.delivery_results ->> 'next_attempt_at', '') is null
+                    or nullif(
+                        event.delivery_results ->> 'next_attempt_at', ''
+                    )::timestamptz <= now()
+                  )
+                  and (
+                    event.delivery_results ->> 'status' is distinct from 'sending'
+                    or nullif(
+                        event.delivery_results ->> 'claimed_at', ''
+                    )::timestamptz < now() - interval '10 minutes'
+                  )
+                order by event.scheduled_for, event.created_at
+                for update of event skip locked
                 limit 1
             )
             update notification_events as event
@@ -118,20 +131,19 @@ class TaskReminderStore:
 
     async def mark_failed(self, reminder_id: UUID, error_type: str) -> None:
         pool = await self._get_pool()
-        payload: dict[str, Any] = {
-            "status": "failed",
-            "error_type": error_type,
-        }
         await pool.execute(
             """
             update notification_events
-            set delivery_results = $2::jsonb || jsonb_build_object(
-                'failed_at', now()
+            set delivery_results = jsonb_build_object(
+                'status', 'failed',
+                'error_type', $2,
+                'failed_at', now(),
+                'next_attempt_at', now() + interval '5 minutes'
             )
             where id = $1 and sent_at is null
             """,
             reminder_id,
-            json.dumps(payload, ensure_ascii=False),
+            error_type,
         )
 
 
