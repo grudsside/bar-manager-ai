@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .pending_action_store import get_pending_action_store
@@ -10,7 +9,7 @@ from .schemas import TaskCreate, TaskOut
 from .task_drafts import extract_task_draft
 from .task_store import get_task_store
 
-LOCAL_TIMEZONE = ZoneInfo("Europe/Moscow")
+LOCAL_TIMEZONE = timezone(timedelta(hours=3), name="MSK")
 ACTIVE_STATUSES = {"new", "planned", "work", "waiting"}
 TASK_COMMANDS = {"/task", "/new"}
 
@@ -61,7 +60,8 @@ def format_task_preview(payload: TaskCreate) -> str:
 
 
 def format_task_list(tasks: list[TaskOut]) -> str:
-    active = [task for task in tasks if task.status in ACTIVE_STATUSES][:10]
+    all_active = [task for task in tasks if task.status in ACTIVE_STATUSES]
+    active = all_active[:10]
     if not active:
         return "Актуальных задач пока нет."
 
@@ -71,7 +71,7 @@ def format_task_list(tasks: list[TaskOut]) -> str:
         due = _format_datetime(task.due_at)
         status = STATUS_LABELS.get(task.status, task.status)
         lines.append(f"{index}. {task.title}\n   {venue} · {status} · срок: {due}")
-    if len([task for task in tasks if task.status in ACTIVE_STATUSES]) > len(active):
+    if len(all_active) > len(active):
         lines.append("Показаны первые 10 задач.")
     return "\n".join(lines)
 
@@ -114,7 +114,10 @@ async def maybe_handle_task_command(
 
         draft = await extract_task_draft(argument, settings)
         if draft.clarification_question:
-            await reply(draft.clarification_question)
+            await reply(
+                f"{draft.clarification_question}\n\n"
+                "После уточнения отправьте полное поручение командой /task ещё раз."
+            )
             return True
 
         payload = TaskCreate(
