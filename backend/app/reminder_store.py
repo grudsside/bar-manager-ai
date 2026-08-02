@@ -10,6 +10,12 @@ import asyncpg
 from .schemas import TaskOut
 from .task_reminders import TaskReminderSpec
 
+TASK_REMINDER_TYPES = (
+    "task_due_24h",
+    "task_due_2h",
+    "task_overdue",
+)
+
 
 @dataclass(frozen=True)
 class ClaimedReminder:
@@ -68,6 +74,8 @@ class TaskReminderStore:
                 select id
                 from notification_events
                 where sent_at is null
+                  and task_id is not null
+                  and notification_type = any($1::text[])
                   and scheduled_for <= now()
                   and (
                     delivery_results ->> 'status' is distinct from 'sending'
@@ -86,7 +94,8 @@ class TaskReminderStore:
             from candidate
             where event.id = candidate.id
             returning event.id, event.task_id, event.title, event.body, event.severity
-            """
+            """,
+            list(TASK_REMINDER_TYPES),
         )
         if row is None:
             return None
