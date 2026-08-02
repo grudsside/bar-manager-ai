@@ -1,8 +1,7 @@
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
-
-import pytest
 
 from app.schemas import TaskCreate, TaskOut, TaskUpdate
 from app.task_history import format_task_card
@@ -64,22 +63,24 @@ def test_task_card_contains_fields_and_readable_history() -> None:
     assert "создана · Владелец" in rendered
 
 
-@pytest.mark.asyncio
-async def test_in_memory_store_records_create_and_update_events() -> None:
-    store = InMemoryTaskStore()
-    task = await store.create_task(
-        TaskCreate(
-            title="Проверить остатки",
-            venue_code="oxford",
-            source_type="telegram",
+def test_in_memory_store_records_create_and_update_events() -> None:
+    async def scenario() -> None:
+        store = InMemoryTaskStore()
+        task = await store.create_task(
+            TaskCreate(
+                title="Проверить остатки",
+                venue_code="oxford",
+                source_type="telegram",
+            )
         )
-    )
-    await store.update_task(task.id, TaskUpdate(status="work", priority="high"))
+        await store.update_task(task.id, TaskUpdate(status="work", priority="high"))
 
-    events = await store.list_task_events(task.id)
+        events = await store.list_task_events(task.id)
 
-    assert [event.event_type for event in events] == ["updated", "created"]
-    assert events[0].payload == {"status": "work", "priority": "high"}
+        assert [event.event_type for event in events] == ["updated", "created"]
+        assert events[0].payload == {"status": "work", "priority": "high"}
+
+    asyncio.run(scenario())
 
 
 def test_telegram_history_routing_contract() -> None:
