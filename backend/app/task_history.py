@@ -96,6 +96,9 @@ def _format_event(event: TaskEventOut) -> str:
         return f"• {stamp} — создана · {actor}"
     if event.event_type == "generated_from_recurring_rule":
         return f"• {stamp} — создана повторяющимся правилом · {actor}"
+    if event.event_type == "note_added":
+        note = _short(event.payload.get("text") or "Пустая заметка", 500)
+        return f"• {stamp} — заметка: {note} · {actor}"
     if event.event_type == "updated":
         changes = _format_changes(event.payload)
         suffix = f": {changes}" if changes else ""
